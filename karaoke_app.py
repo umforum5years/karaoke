@@ -1,0 +1,713 @@
+import sys
+import os
+import re
+import numpy as np
+from PIL import Image, ImageDraw, ImageFont
+from moviepy import VideoClip, AudioFileClip
+from proglog import ProgressBarLogger
+
+from PyQt6.QtWidgets import (
+    QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
+    QGridLayout, QGroupBox, QLabel, QLineEdit, QPushButton,
+    QSpinBox, QSlider, QColorDialog, QFileDialog, QProgressBar,
+    QTextEdit, QMessageBox, QFrame, QCheckBox,
+)
+from PyQt6.QtCore import Qt, QThread, pyqtSignal
+from PyQt6.QtGui import QColor, QPalette, QFont, QPainter, QPen, QBrush, QPixmap, QImage
+
+FPS = 24
+FONT_PATH = "/System/Library/Fonts/Helvetica.ttc"
+VIDEO_W, VIDEO_H = 1280, 720
+
+
+# ─── LRC parsing ───────────────────────────────────────────────
+
+def parse_lrc(lrc_file):
+    with open(lrc_file, 'r', encoding='utf-8') as f:
+        content = f.read()
+
+    metadata = {}
+    patterns = {'ti': r'\[ti:(.*?)\]', 'ar': r'\[ar:(.*?)\]'}
+    for key, pattern in patterns.items():
+        match = re.search(pattern, content)
+        if match:
+            metadata[key] = match.group(1).strip()
+
+    lines = []
+    for match in re.finditer(r'\[(\d+):(\d+\.\d+)\](.*)', content):
+        time_sec = int(match.group(1)) * 60 + float(match.group(2))
+        text = match.group(3).strip()
+        if text:
+            lines.append({'time': time_sec, 'text': text})
+
+    lines.sort(key=lambda x: x['time'])
+    return metadata, lines
+
+
+def split_words_with_timing(lines, audio_duration, fontsize, font):
+    """Build enriched lines with pre-computed word widths."""
+    word_timeline = []
+    enriched_lines = []
+
+    for i, line in enumerate(lines):
+        next_time = lines[i + 1]['time'] if i + 1 < len(lines) else audio_duration
+        line_duration = max(next_time - line['time'], 1.0)
+        words = line['text'].split()
+        if not words:
+            enriched_lines.append({'time': line['time'], 'text': line['text'], 'word_starts': [], 'word_widths': [], 'total_width': 0})
+            continue
+
+        word_dur = line_duration / len(words)
+        word_starts = []
+        word_widths = []
+        total_width = 0
+        for j, word in enumerate(words):
+            w_start = line['time'] + j * word_dur
+            word_starts.append(w_start)
+            bbox = font.getbbox(word)
+            ww = bbox[2] - bbox[0]
+            word_widths.append(ww)
+            total_width += ww + (10 if j < len(words) - 1 else 0)
+            word_timeline.append({
+                'text': word,
+                'start': w_start,
+                'line_time': line['time'],
+            })
+        enriched_lines.append({
+            'time': line['time'],
+            'text': line['text'],
+            'word_starts': word_starts,
+            'word_widths': word_widths,
+            'total_width': total_width,
+            'words': words,
+        })
+
+    return word_timeline, enriched_lines
+
+
+# ─── Frame rendering ───────────────────────────────────────────
+
+def render_frame(t, width, height, enriched_lines, fontsize, font,
+                 text_rect, highlight_color, unhighlighted_color,
+                 bg_prepared=None):
+    if bg_prepared is not None:
+        img = bg_prepared.copy()
+    else:
+        img = Image.new('RGB', (width, height), (20, 20, 30))
+
+    draw = ImageDraw.Draw(img)
+    rx, ry, rw, rh = text_rect
+    lines_per_screen = 4
+
+    for group_start in range(0, len(enriched_lines), lines_per_screen):
+        group = enriched_lines[group_start:group_start + lines_per_screen]
+        first_time = group[0]['time'] if group else 0
+        next_first = enriched_lines[group_start + lines_per_screen]['time'] if group_start + lines_per_screen < len(enriched_lines) else first_time + 10
+
+        if t < first_time or t >= next_first:
+            continue
+
+        total_height = len(group) * (fontsize + 20)
+        start_y = ry + (rh - total_height) // 2
+
+        for line_idx, line in enumerate(group):
+            y = start_y + line_idx * (fontsize + 20)
+            words = line.get('words', [])
+            word_starts = line.get('word_starts', [])
+            word_widths = line.get('word_widths', [])
+            total_width = line.get('total_width', 0)
+            if not words:
+                continue
+
+            x = rx + (rw - total_width) // 2
+
+            # Dark rounded rect behind text
+            draw.rounded_rectangle(
+                [x - 10, y - 4, x + total_width + 10, y + fontsize + 4],
+                radius=8, fill=(0, 0, 0, 140),
+            )
+
+            for word_idx, word in enumerate(words):
+                highlighted = word_idx < len(word_starts) and t >= word_starts[word_idx]
+                color = highlight_color if highlighted else unhighlighted_color
+                draw.text((x, y), word, fill=color, font=font)
+                x += word_widths[word_idx] + 10
+
+    return np.array(img)
+
+
+def prepare_background(bg_pil, width, height):
+    """Resize background once, letterboxing to fit."""
+    bw, bh = bg_pil.size
+    scale = min(width / bw, height / bh)
+    new_w = int(bw * scale)
+    new_h = int(bh * scale)
+    resized = bg_pil.resize((new_w, new_h), Image.LANCZOS)
+    img = Image.new('RGB', (width, height), (0, 0, 0))
+    img.paste(resized, ((width - new_w) // 2, (height - new_h) // 2))
+    return img
+
+
+# ─── Worker thread ─────────────────────────────────────────────
+
+class RenderWorker(QThread):
+    sig_log = pyqtSignal(str)
+    sig_progress = pyqtSignal(int)
+    sig_done = pyqtSignal(bool, str)
+
+    def __init__(self, config):
+        super().__init__()
+        self.config = config
+
+    def run(self):
+        try:
+            c = self.config
+            self.sig_log.emit(f"📝 Parsing LRC: {c['lrc_file']}")
+            metadata, lines = parse_lrc(c['lrc_file'])
+            self.sig_log.emit(f"📊 {len(lines)} lines found")
+
+            self.sig_log.emit(f"🎬 Loading audio: {c['audio_file']}")
+            audio = AudioFileClip(c['audio_file'])
+            duration = audio.duration
+            self.sig_log.emit(f"⏱️ Duration: {duration:.2f}s")
+
+            font = ImageFont.truetype(FONT_PATH, c['fontsize'])
+
+            # Pre-prepare background
+            bg_prepared = None
+            if c.get('bg_image'):
+                self.sig_log.emit(f"🖼️ Loading background: {c['bg_image']}")
+                bg_pil = Image.open(c['bg_image']).convert('RGB')
+                bg_prepared = prepare_background(bg_pil, VIDEO_W, VIDEO_H)
+                bg_pil.close()
+
+            # Build enriched lines with pre-computed widths
+            self.sig_log.emit("⏱️ Calculating word timing...")
+            _, enriched_lines = split_words_with_timing(
+                lines, duration, c['fontsize'], font,
+            )
+
+            text_rect = (c['tx'], c['ty'], c['tw'], c['th'])
+            h_color = c['highlight_color']
+            u_color = c['unhighlighted_color']
+
+            def make_frame(t):
+                return render_frame(
+                    t, VIDEO_W, VIDEO_H, enriched_lines,
+                    c['fontsize'], font, text_rect,
+                    h_color, u_color, bg_prepared,
+                )
+
+            self.sig_log.emit(f"📹 Creating video ({duration:.0f}s at {FPS}fps)...")
+            video = VideoClip(make_frame, duration=duration)
+            video = video.with_audio(audio)
+
+            self.sig_log.emit(f"💾 Rendering to {c['output_file']}...")
+
+            # Progress logger
+            class MyLogger(ProgressBarLogger):
+                def __init__(inner_self, log_fn, progress_fn):
+                    super().__init__()
+                    inner_self._log = log_fn
+                    inner_self._progress = progress_fn
+                    inner_self._total = None
+
+                def bars_callback(inner_self, bar, attr, value, old_value=None):
+                    if bar == 'frame_index' and attr == 'total' and old_value is None:
+                        inner_self._total = value
+                        inner_self._progress(0)
+                    elif bar == 'frame_index' and attr == 'index' and inner_self._total is not None:
+                        pct = int((value / inner_self._total) * 100)
+                        inner_self._progress(pct)
+
+            logger = MyLogger(self.sig_log.emit, self.sig_progress.emit)
+            self.sig_log.emit("⏳ This may take a few minutes...")
+
+            video.write_videofile(
+                c['output_file'],
+                fps=FPS,
+                codec='libx264',
+                audio_codec='aac',
+                preset='medium',
+                bitrate='5000k',
+                audio_bitrate='192k',
+                logger=logger,
+            )
+
+            video.close()
+            audio.close()
+
+            self.sig_log.emit(f"✅ Done! → {c['output_file']}")
+            self.sig_done.emit(True, c['output_file'])
+
+        except Exception as e:
+            self.sig_log.emit(f"❌ Error: {e}")
+            import traceback
+            self.sig_log.emit(traceback.format_exc())
+            self.sig_done.emit(False, str(e))
+
+
+# ─── Preview widget ────────────────────────────────────────────
+
+class TextPreview(QFrame):
+    """Shows a scaled preview of the text area rendered on the background image."""
+
+    ASPECT = VIDEO_W / VIDEO_H  # 16:9
+
+    def __init__(self):
+        super().__init__()
+        self.setFixedHeight(180)
+        self.setStyleSheet("background: #1a1a2e; border-radius: 6px;")
+        self.text_rect = (100, 400, 800, 280)
+        self.enriched_lines = []
+        self.highlight_color = '#FFD700'
+        self.unhighlighted_color = '#AAAAAA'
+        self.sample_t = 5.0
+        self.bg_pil = None
+        self.fontsize = 50
+        self.preview_pixmap = None
+        self._img_data_ref = None
+
+    def _render_preview(self):
+        """Render preview frame using PIL, same as video rendering."""
+        if not self.enriched_lines:
+            self.preview_pixmap = None
+            self.update()
+            return
+
+        font = ImageFont.truetype(FONT_PATH, self.fontsize)
+
+        # Prepare background once
+        bg_prepared = None
+        if self.bg_pil is not None:
+            bg_prepared = prepare_background(self.bg_pil, VIDEO_W, VIDEO_H)
+
+        # Render at full video resolution
+        frame_array = render_frame(
+            self.sample_t, VIDEO_W, VIDEO_H,
+            self.enriched_lines,
+            self.fontsize, font, self.text_rect,
+            self.highlight_color, self.unhighlighted_color,
+            bg_prepared=bg_prepared,
+        )
+
+        # Scale down to widget size
+        w, h = self.width(), self.height()
+        pil_img = Image.fromarray(frame_array).resize((w, h), Image.LANCZOS)
+
+        # Convert to QPixmap via QImage — keep reference to avoid GC
+        img_data = pil_img.tobytes('raw', 'RGB')
+        self._img_data_ref = img_data
+        bytes_per_line = w * 3
+        qimage = QImage(img_data, w, h, bytes_per_line, QImage.Format.Format_RGB888)
+        self.preview_pixmap = QPixmap.fromImage(qimage)
+        self.update()
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        # Adjust width to maintain 16:9 aspect ratio based on fixed height
+        new_width = int(self.height() * self.ASPECT)
+        if new_width != self.width():
+            self.setFixedWidth(new_width)
+
+    def paintEvent(self, event):
+        super().paintEvent(event)
+        if self.preview_pixmap:
+            painter = QPainter(self)
+            painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
+            # Draw pixmap filling widget (widget already 16:9)
+            painter.drawPixmap(0, 0, self.width(), self.height(), self.preview_pixmap)
+
+    def update_preview(self, text_rect, enriched_lines, h_color, u_color,
+                       sample_t=0, bg_pil=None, fontsize=50):
+        self.text_rect = text_rect
+        self.enriched_lines = enriched_lines
+        self.highlight_color = h_color
+        self.unhighlighted_color = u_color
+        self.sample_t = sample_t
+        self.bg_pil = bg_pil
+        self.fontsize = fontsize
+        self._render_preview()
+
+
+# ─── Main window ──────────────────────────────────────────────
+
+class MainWindow(QMainWindow):
+    def __init__(self):
+        super().__init__()
+        self.setWindowTitle('🎤 Karaoke Video Maker')
+        self.setMinimumSize(800, 900)
+
+        # State
+        self.lrc_file = ''
+        self.audio_file = ''
+        self.bg_image = ''
+        self.parsed_lines = []
+
+        self._build_ui()
+
+    def _build_ui(self):
+        central = QWidget()
+        self.setCentralWidget(central)
+        main_layout = QVBoxLayout(central)
+        main_layout.setSpacing(12)
+
+        # ── File Selection ──
+        file_group = QGroupBox('📂 Files')
+        file_layout = QGridLayout(file_group)
+
+        file_layout.addWidget(QLabel('LRC file:'), 0, 0)
+        self.lrc_edit = QLineEdit()
+        self.lrc_edit.setPlaceholderText('Select .lrc file…')
+        self.lrc_edit.textChanged.connect(self._on_lrc_path_changed)
+        file_layout.addWidget(self.lrc_edit, 0, 1)
+        self.lrc_btn = QPushButton('Browse')
+        self.lrc_btn.clicked.connect(lambda: self._pick_file('lrc', self.lrc_edit))
+        file_layout.addWidget(self.lrc_btn, 0, 2)
+
+        file_layout.addWidget(QLabel('Audio file:'), 1, 0)
+        self.audio_edit = QLineEdit()
+        self.audio_edit.setPlaceholderText('Select .mp3 / .wav / .ogg…')
+        self.audio_edit.textChanged.connect(self._on_audio_path_changed)
+        file_layout.addWidget(self.audio_edit, 1, 1)
+        self.audio_btn = QPushButton('Browse')
+        self.audio_btn.clicked.connect(lambda: self._pick_file('audio', self.audio_edit))
+        file_layout.addWidget(self.audio_btn, 1, 2)
+
+        file_layout.addWidget(QLabel('Background image:'), 2, 0)
+        self.bg_edit = QLineEdit()
+        self.bg_edit.setPlaceholderText('Optional .jpg / .png…')
+        self.bg_edit.textChanged.connect(self._update_preview_from_controls)
+        file_layout.addWidget(self.bg_edit, 2, 1)
+        self.bg_btn = QPushButton('Browse')
+        self.bg_btn.clicked.connect(lambda: self._pick_file('image', self.bg_edit))
+        file_layout.addWidget(self.bg_btn, 2, 2)
+
+        file_layout.addWidget(QLabel('Output file:'), 3, 0)
+        self.out_edit = QLineEdit('karaoke.mp4')
+        file_layout.addWidget(self.out_edit, 3, 1)
+        self.out_btn = QPushButton('Save As…')
+        self.out_btn.clicked.connect(self._pick_output)
+        file_layout.addWidget(self.out_btn, 3, 2)
+
+        main_layout.addWidget(file_group)
+
+        # ── Text Area ──
+        area_group = QGroupBox('📐 Text Area  (canvas 1280 × 720 px)')
+        area_layout = QGridLayout(area_group)
+
+        area_layout.addWidget(QLabel('X:'), 0, 0)
+        self.tx_spin = QSpinBox()
+        self.tx_spin.setRange(0, VIDEO_W)
+        self.tx_spin.setValue(100)
+        self.tx_spin.valueChanged.connect(self._update_preview_from_controls)
+        area_layout.addWidget(self.tx_spin, 0, 1)
+
+        area_layout.addWidget(QLabel('Y:'), 1, 0)
+        self.ty_spin = QSpinBox()
+        self.ty_spin.setRange(0, VIDEO_H)
+        self.ty_spin.setValue(400)
+        self.ty_spin.valueChanged.connect(self._update_preview_from_controls)
+        area_layout.addWidget(self.ty_spin, 1, 1)
+
+        area_layout.addWidget(QLabel('Width:'), 2, 0)
+        self.tw_spin = QSpinBox()
+        self.tw_spin.setRange(50, VIDEO_W)
+        self.tw_spin.setValue(800)
+        self.tw_spin.valueChanged.connect(self._update_preview_from_controls)
+        area_layout.addWidget(self.tw_spin, 2, 1)
+
+        area_layout.addWidget(QLabel('Height:'), 3, 0)
+        self.th_spin = QSpinBox()
+        self.th_spin.setRange(30, VIDEO_H)
+        self.th_spin.setValue(280)
+        self.th_spin.valueChanged.connect(self._update_preview_from_controls)
+        area_layout.addWidget(self.th_spin, 3, 1)
+
+        # Preset buttons
+        preset_layout = QHBoxLayout()
+        for label, vals in [
+            ('Bottom band', (100, 400, 1080, 280)),
+            ('Center', (100, 200, 1080, 300)),
+            ('Full screen', (40, 40, 1200, 640)),
+            ('Top band', (100, 40, 1080, 200)),
+        ]:
+            btn = QPushButton(label)
+            btn.clicked.connect(lambda _, v=vals: self._apply_preset(v))
+            preset_layout.addWidget(btn)
+        area_layout.addLayout(preset_layout, 4, 0, 1, 2)
+
+        main_layout.addWidget(area_group)
+
+        # ── Appearance ──
+        app_group = QGroupBox('🎨 Appearance')
+        app_layout = QGridLayout(app_group)
+
+        app_layout.addWidget(QLabel('Font size:'), 0, 0)
+        self.fs_spin = QSpinBox()
+        self.fs_spin.setRange(16, 120)
+        self.fs_spin.setValue(50)
+        self.fs_spin.valueChanged.connect(self._update_preview_from_controls)
+        app_layout.addWidget(self.fs_spin, 0, 1)
+
+        app_layout.addWidget(QLabel('Highlighted color:'), 1, 0)
+        self.h_color_btn = QPushButton()
+        self.h_color_btn.setFixedHeight(32)
+        self._h_color = QColor('#FFD700')
+        self._update_color_btn(self.h_color_btn, self._h_color)
+        self.h_color_btn.clicked.connect(lambda: self._pick_color('highlight'))
+        app_layout.addWidget(self.h_color_btn, 1, 1)
+
+        app_layout.addWidget(QLabel('Unhighlighted color:'), 2, 0)
+        self.u_color_btn = QPushButton()
+        self.u_color_btn.setFixedHeight(32)
+        self._u_color = QColor('#AAAAAA')
+        self._update_color_btn(self.u_color_btn, self._u_color)
+        self.u_color_btn.clicked.connect(lambda: self._pick_color('unhighlight'))
+        app_layout.addWidget(self.u_color_btn, 2, 1)
+
+        main_layout.addWidget(app_group)
+
+        # ── Preview ──
+        preview_header = QHBoxLayout()
+        preview_header.addWidget(QLabel('👁️ Text area preview:'))
+        preview_header.addStretch()
+        preview_header.addWidget(QLabel('Time:'))
+        self.preview_time_slider = QSlider(Qt.Orientation.Horizontal)
+        self.preview_time_slider.setRange(0, 300)
+        self.preview_time_slider.setValue(5)
+        self.preview_time_slider.setFixedWidth(200)
+        self.preview_time_slider.valueChanged.connect(self._on_preview_time_changed)
+        preview_header.addWidget(self.preview_time_slider)
+        self.preview_time_label = QLabel('5s')
+        self.preview_time_label.setFixedWidth(40)
+        preview_header.addWidget(self.preview_time_label)
+
+        main_layout.addLayout(preview_header)
+        self.preview = TextPreview()
+        main_layout.addWidget(self.preview)
+
+        # ── Generate button + progress ──
+        btn_layout = QHBoxLayout()
+        self.gen_btn = QPushButton('🎬 Generate Video')
+        self.gen_btn.setFixedHeight(44)
+        self.gen_btn.setStyleSheet("font-size: 16px; font-weight: bold;")
+        self.gen_btn.clicked.connect(self._generate)
+        btn_layout.addWidget(self.gen_btn)
+
+        self.progress_bar = QProgressBar()
+        self.progress_bar.setTextVisible(False)
+        self.progress_bar.setFixedHeight(20)
+        btn_layout.addWidget(self.progress_bar)
+
+        main_layout.addLayout(btn_layout)
+
+        # ── Log ──
+        main_layout.addWidget(QLabel('📋 Log:'))
+        self.log_box = QTextEdit()
+        self.log_box.setReadOnly(True)
+        self.log_box.setMaximumHeight(150)
+        self.log_box.setStyleSheet("background: #111; color: #ccc; font-family: monospace;")
+        main_layout.addWidget(self.log_box)
+
+    # ── Helpers ──
+
+    def _on_audio_path_changed(self):
+        path = self.audio_edit.text().strip()
+        if path and os.path.exists(path):
+            self.audio_file = path
+            self._update_preview_from_controls()
+
+    def _on_lrc_path_changed(self):
+        path = self.lrc_edit.text().strip()
+        if path and os.path.exists(path):
+            self.lrc_file = path
+            self._try_parse_lrc()
+
+    def _pick_file(self, kind, edit):
+        if kind == 'lrc':
+            path, _ = QFileDialog.getOpenFileName(self, 'Select LRC', '', 'LRC Files (*.lrc);;All Files (*)')
+        elif kind == 'audio':
+            path, _ = QFileDialog.getOpenFileName(self, 'Select Audio', '', 'Audio Files (*.mp3 *.wav *.ogg *.flac *.m4a);;All Files (*)')
+        else:
+            path, _ = QFileDialog.getOpenFileName(self, 'Select Image', '', 'Images (*.jpg *.jpeg *.png *.bmp *.webp);;All Files (*)')
+        if path:
+            edit.setText(path)
+            if kind == 'lrc':
+                self.lrc_file = path
+                self._try_parse_lrc()
+            elif kind == 'audio':
+                self.audio_file = path
+
+    def _pick_output(self):
+        path, _ = QFileDialog.getSaveFileName(self, 'Save Video', 'karaoke.mp4', 'MP4 Video (*.mp4)')
+        if path:
+            self.out_edit.setText(path)
+
+    def _try_parse_lrc(self):
+        try:
+            _, lines = parse_lrc(self.lrc_file)
+            self.parsed_lines = lines
+            self._log(f"📊 Parsed {len(lines)} lines from LRC")
+            self._update_preview_from_controls()
+        except Exception as e:
+            self._log(f"❌ LRC parse error: {e}")
+
+    def _apply_preset(self, vals):
+        self.tx_spin.setValue(vals[0])
+        self.ty_spin.setValue(vals[1])
+        self.tw_spin.setValue(vals[2])
+        self.th_spin.setValue(vals[3])
+        self._update_preview_from_controls()
+
+    def _update_preview_from_controls(self):
+        rect = (self.tx_spin.value(), self.ty_spin.value(),
+                self.tw_spin.value(), self.th_spin.value())
+
+        bg_pil = None
+        bg_path = self.bg_edit.text().strip()
+        if bg_path and os.path.exists(bg_path):
+            try:
+                bg_pil = Image.open(bg_path).convert('RGB')
+            except Exception:
+                pass
+
+        fontsize = self.fs_spin.value()
+        font = ImageFont.truetype(FONT_PATH, fontsize)
+
+        if self.parsed_lines:
+            audio_dur = 300
+            audio_path = self.audio_edit.text().strip()
+            if audio_path and os.path.exists(audio_path):
+                try:
+                    audio_dur = AudioFileClip(audio_path).duration
+                except Exception:
+                    pass
+            _, enriched_lines = split_words_with_timing(
+                self.parsed_lines, audio_dur, fontsize, font,
+            )
+        else:
+            enriched_lines = []
+
+        self.preview.update_preview(
+            rect,
+            enriched_lines,
+            self._h_color.name(),
+            self._u_color.name(),
+            sample_t=self.preview.sample_t,
+            bg_pil=bg_pil,
+            fontsize=fontsize,
+        )
+
+    def _on_preview_time_changed(self, val):
+        self.preview.sample_t = val
+        self.preview_time_label.setText(f'{val}s')
+        self._update_preview_from_controls()
+
+    def _pick_color(self, which):
+        current = self._h_color if which == 'highlight' else self._u_color
+        color = QColorDialog.getColor(current, self, 'Choose Color')
+        if color.isValid():
+            if which == 'highlight':
+                self._h_color = color
+                self._update_color_btn(self.h_color_btn, color)
+            else:
+                self._u_color = color
+                self._update_color_btn(self.u_color_btn, color)
+            self._update_preview_from_controls()
+
+    @staticmethod
+    def _update_color_btn(btn, color):
+        btn.setText(color.name())
+        btn.setStyleSheet(
+            f"background: {color.name()}; color: {'#000' if color.lightness() > 128 else '#fff'}; "
+            f"font-weight: bold; border: 1px solid #555; border-radius: 4px;"
+        )
+
+    def _log(self, msg):
+        self.log_box.append(msg)
+
+    def _generate(self):
+        # Validate
+        lrc = self.lrc_edit.text().strip()
+        audio = self.audio_edit.text().strip()
+        output = self.out_edit.text().strip()
+
+        if not lrc or not os.path.exists(lrc):
+            QMessageBox.warning(self, 'Error', 'Select a valid LRC file.')
+            return
+        if not audio or not os.path.exists(audio):
+            QMessageBox.warning(self, 'Error', 'Select a valid audio file.')
+            return
+        if not output:
+            QMessageBox.warning(self, 'Error', 'Specify an output file.')
+            return
+
+        bg = self.bg_edit.text().strip()
+        if bg and not os.path.exists(bg):
+            QMessageBox.warning(self, 'Error', 'Background image not found.')
+            return
+
+        config = {
+            'lrc_file': lrc,
+            'audio_file': audio,
+            'bg_image': bg if bg and os.path.exists(bg) else None,
+            'output_file': output,
+            'fontsize': self.fs_spin.value(),
+            'tx': self.tx_spin.value(),
+            'ty': self.ty_spin.value(),
+            'tw': self.tw_spin.value(),
+            'th': self.th_spin.value(),
+            'highlight_color': self._h_color.name(),
+            'unhighlighted_color': self._u_color.name(),
+        }
+
+        self.gen_btn.setEnabled(False)
+        self.gen_btn.setText('⏳ Rendering…')
+        self.progress_bar.setValue(0)
+        self.log_box.clear()
+
+        self.worker = RenderWorker(config)
+        self.worker.sig_log.connect(self._log)
+        self.worker.sig_progress.connect(self.progress_bar.setValue)
+        self.worker.sig_done.connect(self._on_finished)
+        self.worker.start()
+
+    def _on_finished(self, ok, msg):
+        self.gen_btn.setEnabled(True)
+        self.gen_btn.setText('🎬 Generate Video')
+        self.progress_bar.setValue(100)
+        if ok:
+            QMessageBox.information(self, 'Done', f'Video saved:\n{msg}')
+        else:
+            QMessageBox.critical(self, 'Error', f'Render failed:\n{msg}')
+
+
+def main():
+    app = QApplication(sys.argv)
+    app.setStyle('Fusion')
+
+    # Dark palette
+    palette = QPalette()
+    palette.setColor(QPalette.ColorRole.Window, QColor(30, 30, 45))
+    palette.setColor(QPalette.ColorRole.WindowText, QColor(220, 220, 230))
+    palette.setColor(QPalette.ColorRole.Base, QColor(20, 20, 35))
+    palette.setColor(QPalette.ColorRole.AlternateBase, QColor(40, 40, 60))
+    palette.setColor(QPalette.ColorRole.ToolTipBase, QColor(220, 220, 230))
+    palette.setColor(QPalette.ColorRole.ToolTipText, QColor(220, 220, 230))
+    palette.setColor(QPalette.ColorRole.Text, QColor(220, 220, 230))
+    palette.setColor(QPalette.ColorRole.Button, QColor(50, 50, 70))
+    palette.setColor(QPalette.ColorRole.ButtonText, QColor(220, 220, 230))
+    palette.setColor(QPalette.ColorRole.BrightText, QColor(255, 255, 255))
+    palette.setColor(QPalette.ColorRole.Link, QColor(100, 160, 255))
+    palette.setColor(QPalette.ColorRole.Highlight, QColor(60, 100, 180))
+    palette.setColor(QPalette.ColorRole.HighlightedText, QColor(255, 255, 255))
+    app.setPalette(palette)
+
+    win = MainWindow()
+    win.show()
+    sys.exit(app.exec())
+
+
+if __name__ == '__main__':
+    main()
