@@ -286,6 +286,11 @@ class RenderWorker(QThread):
 
     def run(self):
         try:
+            # Fix for macOS app bundle: MoviePy writes temp files to cwd by default,
+            # which is read-only inside .app bundles. Force a writable temp dir.
+            import tempfile
+            os.environ['TMPDIR'] = tempfile.gettempdir()
+
             c = self.config
             self.sig_log.emit(f"📝 Parsing LRC: {c['lrc_file']}")
             metadata, lines = parse_lrc(c['lrc_file'])
@@ -369,6 +374,10 @@ class RenderWorker(QThread):
             logger = MyLogger(self.sig_log.emit, self.sig_progress.emit)
             self.sig_log.emit("⏳ This may take a few minutes...")
 
+            # Use absolute path for temp audio file to avoid read-only cwd issue
+            import tempfile
+            temp_audio_path = os.path.join(tempfile.gettempdir(), 'karaokeTEMP_MPY_wvf_snd.mp4')
+
             video.write_videofile(
                 c['output_file'],
                 fps=FPS,
@@ -378,6 +387,7 @@ class RenderWorker(QThread):
                 bitrate='5000k',
                 audio_bitrate='192k',
                 logger=logger,
+                temp_audiofile=temp_audio_path,
             )
 
             video.close()
