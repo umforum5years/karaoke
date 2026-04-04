@@ -58,20 +58,24 @@ def split_words_with_timing(lines, audio_duration, fontsize, font_regular, font_
         if not words:
             enriched_lines.append({
                 'time': line['time'], 'text': line['text'],
-                'word_starts': [], 'word_widths': [], 'word_widths_bold': [],
+                'word_starts': [], 'word_durations': [],
+                'word_widths': [], 'word_widths_bold': [],
                 'total_width': 0, 'total_width_bold': 0,
             })
             continue
 
         word_dur = line_duration / len(words)
         word_starts = []
+        word_durations = []
         word_widths = []
         word_widths_bold = []
         total_width = 0
         total_width_bold = 0
         for j, word in enumerate(words):
             w_start = line['time'] + j * word_dur
+            w_dur = word_dur
             word_starts.append(w_start)
+            word_durations.append(w_dur)
 
             bbox = font_regular.getbbox(word)
             ww = bbox[2] - bbox[0]
@@ -96,6 +100,7 @@ def split_words_with_timing(lines, audio_duration, fontsize, font_regular, font_
             'time': line['time'],
             'text': line['text'],
             'word_starts': word_starts,
+            'word_durations': word_durations,
             'word_widths': word_widths,
             'word_widths_bold': word_widths_bold,
             'total_width': total_width,
@@ -137,6 +142,7 @@ def render_frame(t, width, height, enriched_lines, fontsize, font,
             y = start_y + line_idx * (fontsize + 20)
             words = line.get('words', [])
             word_starts = line.get('word_starts', [])
+            word_durations = line.get('word_durations', [])
             word_widths = line.get(ww_key, [])
             total_width = line.get(tw_key, 0)
             if not words:
@@ -150,10 +156,39 @@ def render_frame(t, width, height, enriched_lines, fontsize, font,
             )
 
             for word_idx, word in enumerate(words):
-                highlighted = word_idx < len(word_starts) and t >= word_starts[word_idx]
-                color = highlight_color if highlighted else unhighlighted_color
-                draw.text((x, y), word, fill=color, font=font)
-                x += word_widths[word_idx] + 10
+                ww = word_widths[word_idx]
+
+                # Calculate fill ratio (0.0 to 1.0)
+                fill_ratio = 0.0
+                if word_idx < len(word_starts):
+                    elapsed = t - word_starts[word_idx]
+                    if word_idx < len(word_durations) and word_durations[word_idx] > 0:
+                        fill_ratio = min(max(elapsed / word_durations[word_idx], 0.0), 1.0)
+                    elif elapsed > 0:
+                        fill_ratio = 1.0
+
+                if fill_ratio <= 0:
+                    # Fully unhighlighted
+                    draw.text((x, y), word, fill=unhighlighted_color, font=font)
+                elif fill_ratio >= 1:
+                    # Fully highlighted
+                    draw.text((x, y), word, fill=highlight_color, font=font)
+                else:
+                    # Partial fill: draw base, then overlay highlight clipped
+                    draw.text((x, y), word, fill=unhighlighted_color, font=font)
+
+                    # Create highlight layer clipped to fill portion
+                    highlight_img = Image.new('RGBA', (ww, fontsize + 10), (0, 0, 0, 0))
+                    hl_draw = ImageDraw.Draw(highlight_img)
+                    hl_draw.text((0, 0), word, fill=highlight_color, font=font)
+
+                    # Crop to fill width
+                    fill_w = int(ww * fill_ratio)
+                    if fill_w > 0:
+                        highlight_img = highlight_img.crop((0, 0, fill_w, highlight_img.height))
+                        img.paste(highlight_img, (x, y), highlight_img)
+
+                x += ww + 10
 
     return np.array(img)
 

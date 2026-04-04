@@ -120,17 +120,44 @@ def render_frame(t, width, height, word_timeline, lines, fontsize, font,
                 fill=(0, 0, 0, 120),
             )
 
-            # Draw each word
+            # Draw each word with gradual fill
             for word_idx, word in enumerate(words):
-                word_highlighted = False
+                ww = word_widths[word_idx]
+
+                # Find this word's timing info
+                word_start = None
+                word_dur = None
                 for wt in word_timeline:
-                    if wt['text'] == word and abs(wt['line_time'] - line['time']) < 0.01 and t >= wt['start']:
-                        word_highlighted = True
+                    if wt['text'] == word and abs(wt['line_time'] - line['time']) < 0.01:
+                        word_start = wt['start']
+                        word_dur = wt['end'] - wt['start']
                         break
 
-                color = '#FFD700' if word_highlighted else '#AAAAAA'
-                draw.text((x, y), word, fill=color, font=font)
-                x += word_widths[word_idx] + 10
+                # Calculate fill ratio
+                fill_ratio = 0.0
+                if word_start is not None:
+                    elapsed = t - word_start
+                    if word_dur and word_dur > 0:
+                        fill_ratio = min(max(elapsed / word_dur, 0.0), 1.0)
+                    elif elapsed > 0:
+                        fill_ratio = 1.0
+
+                if fill_ratio <= 0:
+                    draw.text((x, y), word, fill='#AAAAAA', font=font)
+                elif fill_ratio >= 1:
+                    draw.text((x, y), word, fill='#FFD700', font=font)
+                else:
+                    # Partial fill
+                    draw.text((x, y), word, fill='#AAAAAA', font=font)
+                    highlight_img = Image.new('RGBA', (ww, fontsize + 10), (0, 0, 0, 0))
+                    hl_draw = ImageDraw.Draw(highlight_img)
+                    hl_draw.text((0, 0), word, fill='#FFD700', font=font)
+                    fill_w = int(ww * fill_ratio)
+                    if fill_w > 0:
+                        highlight_img = highlight_img.crop((0, 0, fill_w, highlight_img.height))
+                        img.paste(highlight_img, (x, y), highlight_img)
+
+                x += ww + 10
 
     return np.array(img)
 

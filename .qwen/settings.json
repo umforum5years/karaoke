@@ -7,7 +7,9 @@
       "Bash(pip install *)",
       "Bash(python3 *)",
       "Bash(codesign *)",
-      "Bash(dist/karaokevideomaker.app/contents/macos/karaokevideomaker)"
+      "Bash(dist/karaokevideomaker.app/contents/macos/karaokevideomaker)",
+      "Bash(cd *)",
+      "Bash(head *)"
     ]
   },
   "$version": 3
