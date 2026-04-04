@@ -2,3 +2,5 @@
 *.mp3
 *.pptx
 *.lrc
+dist
+build

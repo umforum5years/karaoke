@@ -3,7 +3,9 @@
     "allow": [
       "Bash(pkill *)",
       "Bash(sleep *)",
-      "Bash(python *)"
+      "Bash(python *)",
+      "Bash(pip install *)",
+      "Bash(python3 *)"
     ]
   },
   "$version": 3
