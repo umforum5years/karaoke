@@ -256,7 +256,6 @@ class TextPreview(QFrame):
 
     def __init__(self):
         super().__init__()
-        self.setFixedHeight(180)
         self.setStyleSheet("background: #1a1a2e; border-radius: 6px;")
         self.text_rect = (100, 400, 800, 280)
         self.enriched_lines = []
@@ -305,10 +304,10 @@ class TextPreview(QFrame):
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
-        # Adjust width to maintain 16:9 aspect ratio based on fixed height
-        new_width = int(self.height() * self.ASPECT)
-        if new_width != self.width():
-            self.setFixedWidth(new_width)
+        # Adjust height to maintain 16:9 aspect ratio based on width
+        new_height = int(self.width() / self.ASPECT)
+        if new_height != self.height():
+            self.setFixedHeight(new_height)
 
     def paintEvent(self, event):
         super().paintEvent(event)
@@ -510,7 +509,7 @@ class MainWindow(QMainWindow):
 
         right_layout.addLayout(preview_header)
         self.preview = TextPreview()
-        right_layout.addWidget(self.preview)
+        right_layout.addWidget(self.preview, 1)  # stretch = 1, занимает всё место
 
         # ── Generate button + progress ──
         btn_layout = QHBoxLayout()
@@ -531,6 +530,7 @@ class MainWindow(QMainWindow):
         right_layout.addWidget(QLabel('📋 Log:'))
         self.log_box = QTextEdit()
         self.log_box.setReadOnly(True)
+        self.log_box.setMaximumHeight(160)
         self.log_box.setStyleSheet("background: #111; color: #ccc; font-family: monospace; font-size: 11px;")
         right_layout.addWidget(self.log_box)
 
