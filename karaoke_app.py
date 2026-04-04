@@ -17,6 +17,8 @@ from PyQt6.QtGui import QColor, QPalette, QFont, QPainter, QPen, QBrush, QPixmap
 
 FPS = 24
 FONT_PATH = "/System/Library/Fonts/Helvetica.ttc"
+FONT_PATH_BOLD = "/System/Library/Fonts/Helvetica.ttc"
+FONT_INDEX_BOLD = 1
 VIDEO_W, VIDEO_H = 1280, 720
 
 
@@ -44,8 +46,8 @@ def parse_lrc(lrc_file):
     return metadata, lines
 
 
-def split_words_with_timing(lines, audio_duration, fontsize, font):
-    """Build enriched lines with pre-computed word widths."""
+def split_words_with_timing(lines, audio_duration, fontsize, font_regular, font_bold=None):
+    """Build enriched lines with pre-computed word widths for both regular and bold."""
     word_timeline = []
     enriched_lines = []
 
@@ -54,20 +56,37 @@ def split_words_with_timing(lines, audio_duration, fontsize, font):
         line_duration = max(next_time - line['time'], 1.0)
         words = line['text'].split()
         if not words:
-            enriched_lines.append({'time': line['time'], 'text': line['text'], 'word_starts': [], 'word_widths': [], 'total_width': 0})
+            enriched_lines.append({
+                'time': line['time'], 'text': line['text'],
+                'word_starts': [], 'word_widths': [], 'word_widths_bold': [],
+                'total_width': 0, 'total_width_bold': 0,
+            })
             continue
 
         word_dur = line_duration / len(words)
         word_starts = []
         word_widths = []
+        word_widths_bold = []
         total_width = 0
+        total_width_bold = 0
         for j, word in enumerate(words):
             w_start = line['time'] + j * word_dur
             word_starts.append(w_start)
-            bbox = font.getbbox(word)
+
+            bbox = font_regular.getbbox(word)
             ww = bbox[2] - bbox[0]
             word_widths.append(ww)
-            total_width += ww + (10 if j < len(words) - 1 else 0)
+            gap = 10 if j < len(words) - 1 else 0
+            total_width += ww + gap
+
+            if font_bold:
+                bbox_b = font_bold.getbbox(word)
+                ww_b = bbox_b[2] - bbox_b[0]
+            else:
+                ww_b = ww
+            word_widths_bold.append(ww_b)
+            total_width_bold += ww_b + gap
+
             word_timeline.append({
                 'text': word,
                 'start': w_start,
@@ -78,7 +97,9 @@ def split_words_with_timing(lines, audio_duration, fontsize, font):
             'text': line['text'],
             'word_starts': word_starts,
             'word_widths': word_widths,
+            'word_widths_bold': word_widths_bold,
             'total_width': total_width,
+            'total_width_bold': total_width_bold,
             'words': words,
         })
 
@@ -89,7 +110,7 @@ def split_words_with_timing(lines, audio_duration, fontsize, font):
 
 def render_frame(t, width, height, enriched_lines, fontsize, font,
                  text_rect, highlight_color, unhighlighted_color,
-                 bg_prepared=None):
+                 bg_prepared=None, text_bg_color=(0, 0, 0, 140), bold=False):
     if bg_prepared is not None:
         img = bg_prepared.copy()
     else:
@@ -98,6 +119,8 @@ def render_frame(t, width, height, enriched_lines, fontsize, font,
     draw = ImageDraw.Draw(img)
     rx, ry, rw, rh = text_rect
     lines_per_screen = 4
+    ww_key = 'word_widths_bold' if bold else 'word_widths'
+    tw_key = 'total_width_bold' if bold else 'total_width'
 
     for group_start in range(0, len(enriched_lines), lines_per_screen):
         group = enriched_lines[group_start:group_start + lines_per_screen]
@@ -114,17 +137,16 @@ def render_frame(t, width, height, enriched_lines, fontsize, font,
             y = start_y + line_idx * (fontsize + 20)
             words = line.get('words', [])
             word_starts = line.get('word_starts', [])
-            word_widths = line.get('word_widths', [])
-            total_width = line.get('total_width', 0)
+            word_widths = line.get(ww_key, [])
+            total_width = line.get(tw_key, 0)
             if not words:
                 continue
 
             x = rx + (rw - total_width) // 2
 
-            # Dark rounded rect behind text
             draw.rounded_rectangle(
                 [x - 10, y - 4, x + total_width + 10, y + fontsize + 4],
-                radius=8, fill=(0, 0, 0, 140),
+                radius=8, fill=text_bg_color,
             )
 
             for word_idx, word in enumerate(words):
@@ -171,7 +193,8 @@ class RenderWorker(QThread):
             duration = audio.duration
             self.sig_log.emit(f"⏱️ Duration: {duration:.2f}s")
 
-            font = ImageFont.truetype(FONT_PATH, c['fontsize'])
+            font_regular = ImageFont.truetype(FONT_PATH, c['fontsize'])
+            font_bold_obj = ImageFont.truetype(FONT_PATH_BOLD, c['fontsize'], index=FONT_INDEX_BOLD)
 
             # Pre-prepare background
             bg_prepared = None
@@ -184,18 +207,23 @@ class RenderWorker(QThread):
             # Build enriched lines with pre-computed widths
             self.sig_log.emit("⏱️ Calculating word timing...")
             _, enriched_lines = split_words_with_timing(
-                lines, duration, c['fontsize'], font,
+                lines, duration, c['fontsize'], font_regular, font_bold_obj,
             )
+
+            # Choose which font to use for rendering
+            font = font_bold_obj if c.get('bold') else font_regular
 
             text_rect = (c['tx'], c['ty'], c['tw'], c['th'])
             h_color = c['highlight_color']
             u_color = c['unhighlighted_color']
+            text_bg = c.get('text_bg_color', (0, 0, 0, 140))
 
             def make_frame(t):
                 return render_frame(
                     t, VIDEO_W, VIDEO_H, enriched_lines,
                     c['fontsize'], font, text_rect,
                     h_color, u_color, bg_prepared,
+                    text_bg_color=text_bg, bold=c.get('bold', False),
                 )
 
             self.sig_log.emit(f"📹 Creating video ({duration:.0f}s at {FPS}fps)...")
@@ -264,6 +292,9 @@ class TextPreview(QFrame):
         self.sample_t = 5.0
         self.bg_pil = None
         self.fontsize = 50
+        self.font_obj = None
+        self.bold = False
+        self.text_bg_color = (0, 0, 0, 140)
         self.preview_pixmap = None
         self._img_data_ref = None
 
@@ -274,7 +305,7 @@ class TextPreview(QFrame):
             self.update()
             return
 
-        font = ImageFont.truetype(FONT_PATH, self.fontsize)
+        font = self.font_obj if self.font_obj else ImageFont.truetype(FONT_PATH, self.fontsize)
 
         # Prepare background once
         bg_prepared = None
@@ -288,6 +319,8 @@ class TextPreview(QFrame):
             self.fontsize, font, self.text_rect,
             self.highlight_color, self.unhighlighted_color,
             bg_prepared=bg_prepared,
+            text_bg_color=self.text_bg_color,
+            bold=self.bold,
         )
 
         # Scale down to widget size
@@ -318,7 +351,8 @@ class TextPreview(QFrame):
             painter.drawPixmap(0, 0, self.width(), self.height(), self.preview_pixmap)
 
     def update_preview(self, text_rect, enriched_lines, h_color, u_color,
-                       sample_t=0, bg_pil=None, fontsize=50):
+                       sample_t=0, bg_pil=None, fontsize=50,
+                       bold=False, font=None, text_bg_color=None):
         self.text_rect = text_rect
         self.enriched_lines = enriched_lines
         self.highlight_color = h_color
@@ -326,6 +360,10 @@ class TextPreview(QFrame):
         self.sample_t = sample_t
         self.bg_pil = bg_pil
         self.fontsize = fontsize
+        self.font_obj = font
+        self.bold = bold
+        if text_bg_color is not None:
+            self.text_bg_color = text_bg_color
         self._render_preview()
 
 
@@ -467,6 +505,11 @@ class MainWindow(QMainWindow):
         self.fs_spin.valueChanged.connect(self._update_preview_from_controls)
         app_layout.addWidget(self.fs_spin, 0, 1)
 
+        self.bold_check = QCheckBox('Bold')
+        self.bold_check.setChecked(False)
+        self.bold_check.stateChanged.connect(self._update_preview_from_controls)
+        app_layout.addWidget(self.bold_check, 0, 2)
+
         app_layout.addWidget(QLabel('Highlight:'), 1, 0)
         self.h_color_btn = QPushButton()
         self.h_color_btn.setFixedHeight(28)
@@ -482,6 +525,14 @@ class MainWindow(QMainWindow):
         self._update_color_btn(self.u_color_btn, self._u_color)
         self.u_color_btn.clicked.connect(lambda: self._pick_color('unhighlight'))
         app_layout.addWidget(self.u_color_btn, 2, 1)
+
+        app_layout.addWidget(QLabel('Text BG:'), 3, 0)
+        self.text_bg_btn = QPushButton()
+        self.text_bg_btn.setFixedHeight(28)
+        self._text_bg_color = QColor(0, 0, 0, 140)
+        self._update_color_btn(self.text_bg_btn, self._text_bg_color)
+        self.text_bg_btn.clicked.connect(self._pick_text_bg_color)
+        app_layout.addWidget(self.text_bg_btn, 3, 1)
 
         left_layout.addWidget(app_group)
         left_layout.addStretch()
@@ -600,7 +651,10 @@ class MainWindow(QMainWindow):
                 pass
 
         fontsize = self.fs_spin.value()
-        font = ImageFont.truetype(FONT_PATH, fontsize)
+        bold = self.bold_check.isChecked()
+        font_regular = ImageFont.truetype(FONT_PATH, fontsize)
+        font_bold_obj = ImageFont.truetype(FONT_PATH_BOLD, fontsize, index=FONT_INDEX_BOLD)
+        font = font_bold_obj if bold else font_regular
 
         if self.parsed_lines:
             audio_dur = 300
@@ -611,10 +665,13 @@ class MainWindow(QMainWindow):
                 except Exception:
                     pass
             _, enriched_lines = split_words_with_timing(
-                self.parsed_lines, audio_dur, fontsize, font,
+                self.parsed_lines, audio_dur, fontsize, font_regular, font_bold_obj,
             )
         else:
             enriched_lines = []
+
+        text_bg = self._text_bg_color
+        text_bg_rgba = (text_bg.red(), text_bg.green(), text_bg.blue(), text_bg.alpha())
 
         self.preview.update_preview(
             rect,
@@ -624,6 +681,9 @@ class MainWindow(QMainWindow):
             sample_t=self.preview.sample_t,
             bg_pil=bg_pil,
             fontsize=fontsize,
+            bold=bold,
+            font=font,
+            text_bg_color=text_bg_rgba,
         )
 
     def _on_preview_time_changed(self, val):
@@ -641,6 +701,19 @@ class MainWindow(QMainWindow):
             else:
                 self._u_color = color
                 self._update_color_btn(self.u_color_btn, color)
+            self._update_preview_from_controls()
+
+    def _pick_text_bg_color(self):
+        color = QColorDialog.getColor(self._text_bg_color, self, 'Text Background Color',
+                                       QColorDialog.ColorDialogOption.ShowAlphaChannel)
+        if color.isValid():
+            self._text_bg_color = color
+            r, g, b, a = color.red(), color.green(), color.blue(), color.alpha()
+            self.text_bg_btn.setText(f'rgba({r},{g},{b},{a})')
+            self.text_bg_btn.setStyleSheet(
+                f"background: rgba({r},{g},{b},{a}); color: {'#000' if color.lightness() > 128 else '#fff'}; "
+                f"font-weight: bold; border: 1px solid #555; border-radius: 4px;"
+            )
             self._update_preview_from_controls()
 
     @staticmethod
@@ -687,6 +760,13 @@ class MainWindow(QMainWindow):
             'th': self.th_spin.value(),
             'highlight_color': self._h_color.name(),
             'unhighlighted_color': self._u_color.name(),
+            'bold': self.bold_check.isChecked(),
+            'text_bg_color': (
+                self._text_bg_color.red(),
+                self._text_bg_color.green(),
+                self._text_bg_color.blue(),
+                self._text_bg_color.alpha(),
+            ),
         }
 
         self.gen_btn.setEnabled(False)
