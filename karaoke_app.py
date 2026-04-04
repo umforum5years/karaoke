@@ -16,9 +16,77 @@ from PyQt6.QtCore import Qt, QThread, pyqtSignal
 from PyQt6.QtGui import QColor, QPalette, QFont, QPainter, QPen, QBrush, QPixmap, QImage
 
 FPS = 24
-FONT_PATH = "/System/Library/Fonts/Helvetica.ttc"
-FONT_PATH_BOLD = "/System/Library/Fonts/Helvetica.ttc"
-FONT_INDEX_BOLD = 1
+
+# ─── Font resolution (bundled → system fallbacks) ────────────
+
+def _get_resource_path(relative_path):
+    """Get absolute path to resource, works for dev and PyInstaller bundle."""
+    if hasattr(sys, '_MEIPASS'):
+        # PyInstaller temp folder
+        return os.path.join(sys._MEIPASS, relative_path)
+    # Development: relative to script location
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+    return os.path.join(base_dir, relative_path)
+
+
+def _find_system_font():
+    """Find a suitable system font based on platform."""
+    system = sys.platform
+    if system == 'darwin':
+        candidates = [
+            '/System/Library/Fonts/Helvetica.ttc',
+            '/System/Library/Fonts/HelveticaNeue.ttc',
+            '/System/Library/Fonts/SFNSDisplay.ttf',
+        ]
+    elif system == 'win32':
+        windir = os.environ.get('WINDIR', r'C:\Windows')
+        candidates = [
+            os.path.join(windir, 'Fonts', 'arial.ttf'),
+            os.path.join(windir, 'Fonts', 'segoeui.ttf'),
+            os.path.join(windir, 'Fonts', 'calibri.ttf'),
+        ]
+    else:
+        candidates = [
+            '/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf',
+            '/usr/share/fonts/TTF/DejaVuSans.ttf',
+        ]
+    for path in candidates:
+        if os.path.exists(path):
+            return path
+    return None
+
+
+def get_font_paths():
+    """Return (regular_font_path, bold_font_path, bold_index_or_none)."""
+    # First try bundled fonts
+    bundled_regular = _get_resource_path('fonts/DejaVuSans.ttf')
+    bundled_bold = _get_resource_path('fonts/DejaVuSans-Bold.ttf')
+    if os.path.exists(bundled_regular) and os.path.exists(bundled_bold):
+        return bundled_regular, bundled_bold, None
+
+    # Fallback to system fonts
+    system_font = _find_system_font()
+    if system_font:
+        # For macOS Helvetica (index 1 = bold)
+        if sys.platform == 'darwin' and 'Helvetica' in system_font:
+            return system_font, system_font, 1
+        # Windows/Linux: try same file or search for bold variant
+        parent = os.path.dirname(system_font)
+        base = os.path.basename(system_font)
+        name_no_ext = os.path.splitext(base)[0]
+        ext = os.path.splitext(base)[1]
+        # Try common bold naming conventions
+        for suffix in ['-Bold', ' Bold', 'B', '']:
+            candidate = os.path.join(parent, f"{name_no_ext}{suffix}{ext}")
+            if os.path.exists(candidate):
+                return system_font, candidate, None
+        return system_font, system_font, None
+
+    # Last resort: bundled path even if missing (will error gracefully)
+    return bundled_regular, bundled_bold, None
+
+
+FONT_PATH, FONT_PATH_BOLD, FONT_INDEX_BOLD = get_font_paths()
 VIDEO_W, VIDEO_H = 1280, 720
 
 
@@ -228,8 +296,23 @@ class RenderWorker(QThread):
             duration = audio.duration
             self.sig_log.emit(f"⏱️ Duration: {duration:.2f}s")
 
-            font_regular = ImageFont.truetype(FONT_PATH, c['fontsize'])
-            font_bold_obj = ImageFont.truetype(FONT_PATH_BOLD, c['fontsize'], index=FONT_INDEX_BOLD)
+            # Load fonts with error handling
+            try:
+                font_regular = ImageFont.truetype(FONT_PATH, c['fontsize'])
+            except Exception as e:
+                self.sig_log.emit(f"❌ Failed to load regular font: {FONT_PATH}")
+                self.sig_log.emit(f"Error: {e}")
+                self.sig_done.emit(False, f"Cannot load font: {FONT_PATH}")
+                return
+
+            try:
+                font_bold_obj = ImageFont.truetype(
+                    FONT_PATH_BOLD, c['fontsize'],
+                    index=FONT_INDEX_BOLD if FONT_INDEX_BOLD is not None else 0,
+                )
+            except Exception as e:
+                self.sig_log.emit(f"⚠️ Failed to load bold font, using regular: {e}")
+                font_bold_obj = font_regular
 
             # Pre-prepare background
             bg_prepared = None
@@ -687,8 +770,17 @@ class MainWindow(QMainWindow):
 
         fontsize = self.fs_spin.value()
         bold = self.bold_check.isChecked()
-        font_regular = ImageFont.truetype(FONT_PATH, fontsize)
-        font_bold_obj = ImageFont.truetype(FONT_PATH_BOLD, fontsize, index=FONT_INDEX_BOLD)
+        try:
+            font_regular = ImageFont.truetype(FONT_PATH, fontsize)
+        except Exception:
+            font_regular = ImageFont.load_default()
+        try:
+            font_bold_obj = ImageFont.truetype(
+                FONT_PATH_BOLD, fontsize,
+                index=FONT_INDEX_BOLD if FONT_INDEX_BOLD is not None else 0,
+            )
+        except Exception:
+            font_bold_obj = font_regular
         font = font_bold_obj if bold else font_regular
 
         if self.parsed_lines:

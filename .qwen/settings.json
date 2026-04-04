@@ -9,7 +9,11 @@
       "Bash(codesign *)",
       "Bash(dist/karaokevideomaker.app/contents/macos/karaokevideomaker)",
       "Bash(cd *)",
-      "Bash(head *)"
+      "Bash(head *)",
+      "Bash(curl *)",
+      "Bash(mkdir *)",
+      "Bash(tar *)",
+      "Bash(del *)"
     ]
   },
   "$version": 3

@@ -127,6 +127,14 @@ python build.py --clean
 
 Output: `dist\KaraokeVideoMaker\KaraokeVideoMaker.exe`
 
+### Build improvements
+
+The updated build script now includes:
+- **Bundled fonts** — DejaVu Sans fonts are included in the executable package
+- **Cross-platform font detection** — automatically uses system fonts if bundled fonts fail
+- **All dependencies** — PyQt6, moviepy, PIL, numpy, imageio and all their submodules
+- **Better error handling** — font loading errors are now reported gracefully
+
 ### Custom icon
 
 Place `icon.jpeg` in the project root, then generate platform-specific icon files:
@@ -156,28 +164,28 @@ The window is split into two panes:
 #### Left Pane — Controls
 
 **📂 Files**
-| Field | Description |
-|---|---|
-| **LRC** | Path to `.lrc` lyrics file |
-| **Audio** | Path to audio file (`.mp3`, `.wav`, `.ogg`, `.flac`, `.m4a`) |
-| **BG image** | Optional background image (`.jpg`, `.png`) |
-| **Output** | Output video file path |
+| Field        | Description                                                  |
+| ------------ | ------------------------------------------------------------ |
+| **LRC**      | Path to `.lrc` lyrics file                                   |
+| **Audio**    | Path to audio file (`.mp3`, `.wav`, `.ogg`, `.flac`, `.m4a`) |
+| **BG image** | Optional background image (`.jpg`, `.png`)                   |
+| **Output**   | Output video file path                                       |
 
 **📐 Text Area** — position and size of lyrics on the 1280×720 canvas
-| Control | Description |
-|---|---|
-| **X, Y** | Top-left corner position |
-| **W, H** | Width and height of text area |
+| Control     | Description                                      |
+| ----------- | ------------------------------------------------ |
+| **X, Y**    | Top-left corner position                         |
+| **W, H**    | Width and height of text area                    |
 | **Presets** | Bottom / Center / Full / Top — quick positioning |
 
 **🎨 Appearance**
-| Control | Description |
-|---|---|
-| **Font size** | Text size (16–120) |
-| **Bold** | Toggle bold font (Helvetica Bold) |
-| **Highlight** | Color of highlighted (active) words |
-| **Inactive** | Color of unhighlighted words |
-| **Text BG** | Background color behind text (with alpha/transparency support) |
+| Control       | Description                                                    |
+| ------------- | -------------------------------------------------------------- |
+| **Font size** | Text size (16–120)                                             |
+| **Bold**      | Toggle bold font (Helvetica Bold)                              |
+| **Highlight** | Color of highlighted (active) words                            |
+| **Inactive**  | Color of unhighlighted words                                   |
+| **Text BG**   | Background color behind text (with alpha/transparency support) |
 
 #### Right Pane — Preview & Render
 
@@ -228,12 +236,17 @@ python-presentation/
 ├── icon.jpeg               # Source icon image
 ├── icon.icns               # macOS icon (generated)
 ├── icon.ico                # Windows icon (generated)
+├── fonts/                  # Bundled fonts (cross-platform)
+│   ├── DejaVuSans.ttf      # Regular font
+│   └── DejaVuSans-Bold.ttf # Bold font
 ├── song.lrc                # Example LRC file
 ├── song.mp3                # Example audio file
 ├── karaoke.mp4             # Generated video
 ├── background.jpg          # Optional background image
 ├── dist/                   # Built applications
-│   └── KaraokeVideoMaker.app/
+│   └── KaraokeVideoMaker/
+│       ├── KaraokeVideoMaker.exe
+│       └── _internal/      # Dependencies (including fonts)
 └── README.md               # This file
 ```
 
@@ -242,7 +255,15 @@ python-presentation/
 ## Troubleshooting
 
 ### "Font not found" error
-The app uses macOS system Helvetica. On Windows, edit `FONT_PATH` in `karaoke_app.py` to point to a valid font (e.g., `C:\Windows\Fonts\arial.ttf`).
+The app now includes **DejaVu Sans** font (bundled in the `fonts/` directory) which works on both macOS and Windows.
+If the bundled fonts are not found, the app automatically falls back to system fonts:
+- **Windows:** Arial → Segoe UI → Calibri
+- **macOS:** Helvetica → Helvetica Neue → SF Pro
+- **Linux:** DejaVu Sans (system)
+
+### App crashes after selecting a file (Windows build)
+This was caused by hardcoded macOS font paths (`/System/Library/Fonts/...`). 
+**Fixed in this version:** The build now includes bundled fonts and automatically detects platform-specific fonts.
 
 ### Slow rendering
 Rendering time depends on audio duration. A 4-minute song takes ~5-10 minutes to render. The preview renders instantly since it generates only one frame.

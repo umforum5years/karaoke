@@ -101,29 +101,55 @@ def build_windows(clean):
         '--onedir',
         '--noconsole',
         '--noconfirm',
+        # Bundle fonts folder
+        '--add-data', 'fonts/DejaVuSans.ttf;fonts',
+        '--add-data', 'fonts/DejaVuSans-Bold.ttf;fonts',
+        # Bundle background image if exists
+        # Collect all dependencies
         '--collect-all', 'moviepy',
         '--collect-all', 'proglog',
         '--collect-all', 'PIL',
         '--collect-all', 'numpy',
         '--collect-all', 'imageio',
         '--collect-all', 'PyQt6',
+        '--collect-submodules', 'moviepy.audio.fx.all',
+        '--collect-submodules', 'moviepy.video.fx.all',
+        # Hidden imports for PyQt6
         '--hidden-import', 'PyQt6',
+        '--hidden-import', 'PyQt6.QtCore',
+        '--hidden-import', 'PyQt6.QtGui',
+        '--hidden-import', 'PyQt6.QtWidgets',
+        '--hidden-import', 'PyQt6.sip',
+        # Hidden imports for moviepy
         '--hidden-import', 'moviepy',
         '--hidden-import', 'moviepy.audio',
         '--hidden-import', 'moviepy.audio.fx',
+        '--hidden-import', 'moviepy.audio.fx.all',
         '--hidden-import', 'moviepy.audio.AudioClip',
         '--hidden-import', 'moviepy.audio.io',
         '--hidden-import', 'moviepy.audio.io.AudioFileClip',
+        '--hidden-import', 'moviepy.audio.io.readers',
         '--hidden-import', 'moviepy.video',
         '--hidden-import', 'moviepy.video.fx',
+        '--hidden-import', 'moviepy.video.fx.all',
         '--hidden-import', 'moviepy.video.io',
         '--hidden-import', 'moviepy.video.io.ffmpeg_writer',
+        '--hidden-import', 'moviepy.video.io.VideoFileClip',
         '--hidden-import', 'moviepy.decorators',
+        '--hidden-import', 'moviepy.config',
+        '--hidden-import', 'moviepy.tools',
+        # Other dependencies
         '--hidden-import', 'proglog',
         '--hidden-import', 'PIL',
+        '--hidden-import', 'PIL.ImageFont',
         '--hidden-import', 'numpy',
         '--hidden-import', 'imageio',
         '--hidden-import', 'imageio_ffmpeg',
+        '--hidden-import', 'imageio.plugins',
+        '--hidden-import', 'imageio.plugins.ffmpeg',
+        # Include scipy if present
+        '--hidden-import', 'scipy',
+        '--hidden-import', 'scipy.interpolate',
     ]
 
     if icon_win:
