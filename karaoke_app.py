@@ -336,7 +336,7 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle('🎤 Karaoke Video Maker')
-        self.setMinimumSize(800, 900)
+        self.setMinimumSize(1100, 700)
 
         # State
         self.lrc_file = ''
@@ -349,52 +349,68 @@ class MainWindow(QMainWindow):
     def _build_ui(self):
         central = QWidget()
         self.setCentralWidget(central)
-        main_layout = QVBoxLayout(central)
+        main_layout = QHBoxLayout(central)
         main_layout.setSpacing(12)
 
-        # ── File Selection ──
+        # ═══ LEFT PANE — Controls ═══
+        left = QWidget()
+        left_layout = QVBoxLayout(left)
+        left_layout.setContentsMargins(0, 0, 0, 0)
+        left_layout.setSpacing(8)
+        left.setMinimumWidth(380)
+        left.setMaximumWidth(420)
+
+        # ── Files ──
         file_group = QGroupBox('📂 Files')
         file_layout = QGridLayout(file_group)
+        file_layout.setVerticalSpacing(4)
+        file_layout.setHorizontalSpacing(4)
 
-        file_layout.addWidget(QLabel('LRC file:'), 0, 0)
+        file_layout.addWidget(QLabel('LRC:'), 0, 0)
         self.lrc_edit = QLineEdit()
-        self.lrc_edit.setPlaceholderText('Select .lrc file…')
+        self.lrc_edit.setPlaceholderText('.lrc file…')
         self.lrc_edit.textChanged.connect(self._on_lrc_path_changed)
         file_layout.addWidget(self.lrc_edit, 0, 1)
-        self.lrc_btn = QPushButton('Browse')
+        self.lrc_btn = QPushButton('…')
+        self.lrc_btn.setFixedWidth(32)
         self.lrc_btn.clicked.connect(lambda: self._pick_file('lrc', self.lrc_edit))
         file_layout.addWidget(self.lrc_btn, 0, 2)
 
-        file_layout.addWidget(QLabel('Audio file:'), 1, 0)
+        file_layout.addWidget(QLabel('Audio:'), 1, 0)
         self.audio_edit = QLineEdit()
-        self.audio_edit.setPlaceholderText('Select .mp3 / .wav / .ogg…')
+        self.audio_edit.setPlaceholderText('.mp3 / .wav / .ogg…')
         self.audio_edit.textChanged.connect(self._on_audio_path_changed)
         file_layout.addWidget(self.audio_edit, 1, 1)
-        self.audio_btn = QPushButton('Browse')
+        self.audio_btn = QPushButton('…')
+        self.audio_btn.setFixedWidth(32)
         self.audio_btn.clicked.connect(lambda: self._pick_file('audio', self.audio_edit))
         file_layout.addWidget(self.audio_btn, 1, 2)
 
-        file_layout.addWidget(QLabel('Background image:'), 2, 0)
+        file_layout.addWidget(QLabel('BG image:'), 2, 0)
         self.bg_edit = QLineEdit()
-        self.bg_edit.setPlaceholderText('Optional .jpg / .png…')
+        self.bg_edit.setPlaceholderText('optional .jpg / .png…')
         self.bg_edit.textChanged.connect(self._update_preview_from_controls)
         file_layout.addWidget(self.bg_edit, 2, 1)
-        self.bg_btn = QPushButton('Browse')
+        self.bg_btn = QPushButton('…')
+        self.bg_btn.setFixedWidth(32)
         self.bg_btn.clicked.connect(lambda: self._pick_file('image', self.bg_edit))
         file_layout.addWidget(self.bg_btn, 2, 2)
 
-        file_layout.addWidget(QLabel('Output file:'), 3, 0)
+        file_layout.addWidget(QLabel('Output:'), 3, 0)
         self.out_edit = QLineEdit('karaoke.mp4')
         file_layout.addWidget(self.out_edit, 3, 1)
-        self.out_btn = QPushButton('Save As…')
+        self.out_btn = QPushButton('…')
+        self.out_btn.setFixedWidth(32)
         self.out_btn.clicked.connect(self._pick_output)
         file_layout.addWidget(self.out_btn, 3, 2)
 
-        main_layout.addWidget(file_group)
+        left_layout.addWidget(file_group)
 
         # ── Text Area ──
-        area_group = QGroupBox('📐 Text Area  (canvas 1280 × 720 px)')
+        area_group = QGroupBox('📐 Text Area  (1280×720)')
         area_layout = QGridLayout(area_group)
+        area_layout.setVerticalSpacing(4)
+        area_layout.setHorizontalSpacing(4)
 
         area_layout.addWidget(QLabel('X:'), 0, 0)
         self.tx_spin = QSpinBox()
@@ -410,38 +426,40 @@ class MainWindow(QMainWindow):
         self.ty_spin.valueChanged.connect(self._update_preview_from_controls)
         area_layout.addWidget(self.ty_spin, 1, 1)
 
-        area_layout.addWidget(QLabel('Width:'), 2, 0)
+        area_layout.addWidget(QLabel('W:'), 2, 0)
         self.tw_spin = QSpinBox()
         self.tw_spin.setRange(50, VIDEO_W)
-        self.tw_spin.setValue(800)
+        self.tw_spin.setValue(1080)
         self.tw_spin.valueChanged.connect(self._update_preview_from_controls)
         area_layout.addWidget(self.tw_spin, 2, 1)
 
-        area_layout.addWidget(QLabel('Height:'), 3, 0)
+        area_layout.addWidget(QLabel('H:'), 3, 0)
         self.th_spin = QSpinBox()
         self.th_spin.setRange(30, VIDEO_H)
         self.th_spin.setValue(280)
         self.th_spin.valueChanged.connect(self._update_preview_from_controls)
         area_layout.addWidget(self.th_spin, 3, 1)
 
-        # Preset buttons
         preset_layout = QHBoxLayout()
+        preset_layout.setSpacing(4)
         for label, vals in [
-            ('Bottom band', (100, 400, 1080, 280)),
+            ('Bottom', (100, 400, 1080, 280)),
             ('Center', (100, 200, 1080, 300)),
-            ('Full screen', (40, 40, 1200, 640)),
-            ('Top band', (100, 40, 1080, 200)),
+            ('Full', (40, 40, 1200, 640)),
+            ('Top', (100, 40, 1080, 200)),
         ]:
             btn = QPushButton(label)
             btn.clicked.connect(lambda _, v=vals: self._apply_preset(v))
             preset_layout.addWidget(btn)
         area_layout.addLayout(preset_layout, 4, 0, 1, 2)
 
-        main_layout.addWidget(area_group)
+        left_layout.addWidget(area_group)
 
         # ── Appearance ──
         app_group = QGroupBox('🎨 Appearance')
         app_layout = QGridLayout(app_group)
+        app_layout.setVerticalSpacing(4)
+        app_layout.setHorizontalSpacing(4)
 
         app_layout.addWidget(QLabel('Font size:'), 0, 0)
         self.fs_spin = QSpinBox()
@@ -450,65 +468,74 @@ class MainWindow(QMainWindow):
         self.fs_spin.valueChanged.connect(self._update_preview_from_controls)
         app_layout.addWidget(self.fs_spin, 0, 1)
 
-        app_layout.addWidget(QLabel('Highlighted color:'), 1, 0)
+        app_layout.addWidget(QLabel('Highlight:'), 1, 0)
         self.h_color_btn = QPushButton()
-        self.h_color_btn.setFixedHeight(32)
+        self.h_color_btn.setFixedHeight(28)
         self._h_color = QColor('#FFD700')
         self._update_color_btn(self.h_color_btn, self._h_color)
         self.h_color_btn.clicked.connect(lambda: self._pick_color('highlight'))
         app_layout.addWidget(self.h_color_btn, 1, 1)
 
-        app_layout.addWidget(QLabel('Unhighlighted color:'), 2, 0)
+        app_layout.addWidget(QLabel('Inactive:'), 2, 0)
         self.u_color_btn = QPushButton()
-        self.u_color_btn.setFixedHeight(32)
+        self.u_color_btn.setFixedHeight(28)
         self._u_color = QColor('#AAAAAA')
         self._update_color_btn(self.u_color_btn, self._u_color)
         self.u_color_btn.clicked.connect(lambda: self._pick_color('unhighlight'))
         app_layout.addWidget(self.u_color_btn, 2, 1)
 
-        main_layout.addWidget(app_group)
+        left_layout.addWidget(app_group)
+        left_layout.addStretch()
+
+        # ═══ RIGHT PANE — Preview + Render ═══
+        right = QWidget()
+        right_layout = QVBoxLayout(right)
+        right_layout.setContentsMargins(0, 0, 0, 0)
+        right_layout.setSpacing(8)
 
         # ── Preview ──
         preview_header = QHBoxLayout()
-        preview_header.addWidget(QLabel('👁️ Text area preview:'))
+        preview_header.addWidget(QLabel('👁️ Preview:'))
         preview_header.addStretch()
         preview_header.addWidget(QLabel('Time:'))
         self.preview_time_slider = QSlider(Qt.Orientation.Horizontal)
         self.preview_time_slider.setRange(0, 300)
         self.preview_time_slider.setValue(5)
-        self.preview_time_slider.setFixedWidth(200)
+        self.preview_time_slider.setFixedWidth(180)
         self.preview_time_slider.valueChanged.connect(self._on_preview_time_changed)
         preview_header.addWidget(self.preview_time_slider)
         self.preview_time_label = QLabel('5s')
         self.preview_time_label.setFixedWidth(40)
         preview_header.addWidget(self.preview_time_label)
 
-        main_layout.addLayout(preview_header)
+        right_layout.addLayout(preview_header)
         self.preview = TextPreview()
-        main_layout.addWidget(self.preview)
+        right_layout.addWidget(self.preview)
 
         # ── Generate button + progress ──
         btn_layout = QHBoxLayout()
         self.gen_btn = QPushButton('🎬 Generate Video')
-        self.gen_btn.setFixedHeight(44)
-        self.gen_btn.setStyleSheet("font-size: 16px; font-weight: bold;")
+        self.gen_btn.setFixedHeight(36)
+        self.gen_btn.setStyleSheet("font-size: 14px; font-weight: bold;")
         self.gen_btn.clicked.connect(self._generate)
         btn_layout.addWidget(self.gen_btn)
 
         self.progress_bar = QProgressBar()
-        self.progress_bar.setTextVisible(False)
-        self.progress_bar.setFixedHeight(20)
+        self.progress_bar.setTextVisible(True)
+        self.progress_bar.setFixedHeight(22)
         btn_layout.addWidget(self.progress_bar)
 
-        main_layout.addLayout(btn_layout)
+        right_layout.addLayout(btn_layout)
 
         # ── Log ──
-        main_layout.addWidget(QLabel('📋 Log:'))
+        right_layout.addWidget(QLabel('📋 Log:'))
         self.log_box = QTextEdit()
         self.log_box.setReadOnly(True)
-        self.log_box.setMaximumHeight(150)
-        self.log_box.setStyleSheet("background: #111; color: #ccc; font-family: monospace;")
-        main_layout.addWidget(self.log_box)
+        self.log_box.setStyleSheet("background: #111; color: #ccc; font-family: monospace; font-size: 11px;")
+        right_layout.addWidget(self.log_box)
+
+        main_layout.addWidget(left)
+        main_layout.addWidget(right)
 
     # ── Helpers ──
 
