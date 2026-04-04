@@ -3,7 +3,7 @@ from PyInstaller.utils.hooks import collect_all
 
 datas = []
 binaries = []
-hiddenimports = ['PyQt6', 'moviepy', 'proglog', 'PIL', 'numpy']
+hiddenimports = ['PyQt6', 'moviepy', 'moviepy.audio', 'moviepy.audio.fx', 'moviepy.audio.AudioClip', 'moviepy.audio.io', 'moviepy.audio.io.AudioFileClip', 'moviepy.video', 'moviepy.video.fx', 'moviepy.video.io', 'moviepy.video.io.ffmpeg_writer', 'moviepy.decorators', 'proglog', 'PIL', 'numpy', 'imageio', 'imageio_ffmpeg']
 tmp_ret = collect_all('moviepy')
 datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
 tmp_ret = collect_all('proglog')
@@ -11,6 +11,8 @@ datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
 tmp_ret = collect_all('PIL')
 datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
 tmp_ret = collect_all('numpy')
+datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
+tmp_ret = collect_all('imageio')
 datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
 
 

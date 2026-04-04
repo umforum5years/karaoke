@@ -5,7 +5,9 @@
       "Bash(sleep *)",
       "Bash(python *)",
       "Bash(pip install *)",
-      "Bash(python3 *)"
+      "Bash(python3 *)",
+      "Bash(codesign *)",
+      "Bash(dist/karaokevideomaker.app/contents/macos/karaokevideomaker)"
     ]
   },
   "$version": 3

@@ -67,6 +67,44 @@ TEXT_RECT = (100, 400, 1080, 280)  # (x, y, width, height)
 
 ---
 
+## Running on Apple Silicon (M1/M2/M3)
+
+### Running from source (recommended)
+
+```bash
+pip install moviepy PyQt6 pillow numpy
+python karaoke_app.py
+```
+
+### Running the standalone app
+
+```bash
+open dist/KaraokeVideoMaker.app
+```
+
+If macOS blocks the app (Gatekeeper warning):
+
+```bash
+# Remove quarantine attribute (if downloaded/transferred)
+xattr -d com.apple.quarantine dist/KaraokeVideoMaker.app 2>/dev/null
+
+# Or go to: System Settings → Privacy & Security → Security
+# Click "Open Anyway" next to the blocked app warning
+```
+
+If you get a `Killed: 9` error:
+1. Open **Terminal**
+2. Navigate to the app contents:
+   ```bash
+   dist/KaraokeVideoMaker.app/Contents/MacOS/KaraokeVideoMaker
+   ```
+3. If it shows an error about code signing, re-sign it:
+   ```bash
+   codesign --force --deep --sign - dist/KaraokeVideoMaker.app
+   ```
+
+---
+
 ## Building Standalone Executable
 
 ### macOS
