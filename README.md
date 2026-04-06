@@ -11,6 +11,7 @@ Desktop application for creating karaoke videos from LRC lyric files and audio.
 
 - 🎵 **LRC parsing** — reads standard `.lrc` files with timestamps
 - 🎬 **Video generation** — creates MP4 with word-by-word karaoke highlighting
+- 🎵 **LRC Creator** — create `.lrc` files from audio + plain text lyrics
 - 🖼️ **Background image** — optional image as video background (letterboxed, no crop)
 - 📐 **Text area control** — precise X/Y/W/H positioning of lyrics on screen
 - 🎨 **Customizable appearance** — font size, bold, highlight/inactive colors, text background color
@@ -196,6 +197,36 @@ The window is split into two panes:
 **🎬 Generate Video** — start rendering
 - Progress bar shows percentage of frames rendered
 - Log shows detailed status and any errors
+
+---
+
+## LRC Creator
+
+The **LRC Creator** allows you to create synchronized lyric files from audio files and plain text.
+
+### How to Use:
+
+1. **Open LRC Creator**: Click the **"🎵 Create LRC File"** button in the main window
+2. **Load Audio**: Select an MP3, WAV, OGG, FLAC, or M4A file
+3. **Enter Lyrics**: Paste lyrics (one line per stanza) and click "Parse Lyrics"
+4. **Mark Timestamps**:
+   - Press **PLAY** to start the audio
+   - Press **SPACE** when a line starts → marks START time
+   - Press **SPACE** when the line ends → marks END time
+   - The app automatically advances to the next line
+5. **Save**: Click **"💾 Save LRC"** to create your `.lrc` file
+
+### Keyboard Shortcuts:
+- **SPACE**: Mark timestamp (start or end of current line)
+- **BACKSPACE**: Undo last timestamp (steps back one action at a time)
+
+### Tips:
+- Practice the timing before marking
+- Use headphones for better audio clarity
+- You can pause and seek using the slider
+- Reset all timestamps if you make mistakes
+
+For detailed instructions, see [LRC_CREATOR_GUIDE.md](LRC_CREATOR_GUIDE.md)
 
 ---
 

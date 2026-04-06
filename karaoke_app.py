@@ -10,10 +10,12 @@ from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QGridLayout, QGroupBox, QLabel, QLineEdit, QPushButton,
     QSpinBox, QSlider, QColorDialog, QFileDialog, QProgressBar,
-    QTextEdit, QMessageBox, QFrame, QCheckBox,
+    QTextEdit, QMessageBox, QFrame, QCheckBox, QListWidget, QListWidgetItem,
+    QSplitter,
 )
-from PyQt6.QtCore import Qt, QThread, pyqtSignal
+from PyQt6.QtCore import Qt, QThread, pyqtSignal, QTimer, QUrl
 from PyQt6.QtGui import QColor, QPalette, QFont, QPainter, QPen, QBrush, QPixmap, QImage
+from PyQt6.QtMultimedia import QAudioOutput, QMediaPlayer
 
 FPS = 24
 
@@ -571,6 +573,13 @@ class MainWindow(QMainWindow):
 
         left_layout.addWidget(file_group)
 
+        # ── LRC Creator button ──
+        self.lrc_creator_btn = QPushButton('🎵 Create LRC File (from audio + lyrics)')
+        self.lrc_creator_btn.setFixedHeight(36)
+        self.lrc_creator_btn.setStyleSheet('font-size: 13px; font-weight: bold;')
+        self.lrc_creator_btn.clicked.connect(self._open_lrc_creator)
+        left_layout.addWidget(self.lrc_creator_btn)
+
         # ── Text Area ──
         area_group = QGroupBox('📐 Text Area  (1280×720)')
         area_layout = QGridLayout(area_group)
@@ -750,6 +759,11 @@ class MainWindow(QMainWindow):
         if path:
             self.out_edit.setText(path)
 
+    def _open_lrc_creator(self):
+        """Open the LRC Creator window."""
+        self.lrc_creator = LRCCreatorWindow()
+        self.lrc_creator.show()
+
     def _try_parse_lrc(self):
         try:
             _, lines = parse_lrc(self.lrc_file)
@@ -925,6 +939,455 @@ class MainWindow(QMainWindow):
             QMessageBox.information(self, 'Done', f'Video saved:\n{msg}')
         else:
             QMessageBox.critical(self, 'Error', f'Render failed:\n{msg}')
+
+
+class LRCCreatorWindow(QMainWindow):
+    """Window for creating LRC files with timestamps from audio and lyrics."""
+
+    def __init__(self):
+        super().__init__()
+        self.setWindowTitle('🎵 LRC Creator')
+        self.setMinimumSize(900, 700)
+
+        # State
+        self.audio_file = ''
+        self.lyrics_lines = []
+        self.timestamps = {}  # line_index -> {'start': time, 'end': time}
+        self.current_line = 0
+        self.is_recording_start = True
+
+        # Audio player
+        self.player = QMediaPlayer()
+        self.audio_output = QAudioOutput()
+        self.player.setAudioOutput(self.audio_output)
+        self.audio_output.setVolume(1.0)
+
+        # Timer for updating position display
+        self.position_timer = QTimer(self)
+        self.position_timer.timeout.connect(self._update_position_display)
+        self.position_timer.start(100)  # Update every 100ms
+
+        self._build_ui()
+
+    def _build_ui(self):
+        central = QWidget()
+        self.setCentralWidget(central)
+        main_layout = QVBoxLayout(central)
+        main_layout.setSpacing(8)
+
+        # ═══ TOP: File loading ═══
+        file_group = QGroupBox('📂 Files')
+        file_layout = QGridLayout(file_group)
+
+        file_layout.addWidget(QLabel('Audio:'), 0, 0)
+        self.audio_edit = QLineEdit()
+        self.audio_edit.setPlaceholderText('Select MP3/audio file...')
+        file_layout.addWidget(self.audio_edit, 0, 1)
+        self.audio_btn = QPushButton('Browse')
+        self.audio_btn.clicked.connect(self._load_audio_file)
+        file_layout.addWidget(self.audio_btn, 0, 2)
+
+        file_layout.addWidget(QLabel('Output:'), 1, 0)
+        self.output_edit = QLineEdit('song.lrc')
+        file_layout.addWidget(self.output_edit, 1, 1)
+        self.output_btn = QPushButton('Browse')
+        self.output_btn.clicked.connect(self._pick_output_file)
+        file_layout.addWidget(self.output_btn, 1, 2)
+
+        main_layout.addWidget(file_group)
+
+        # ═══ MIDDLE: Lyrics input ═══
+        lyrics_group = QGroupBox('📝 Lyrics')
+        lyrics_layout = QVBoxLayout(lyrics_group)
+
+        self.lyrics_text = QTextEdit()
+        self.lyrics_text.setPlaceholderText(
+            'Paste lyrics here (one line per stanza)...\n\n'
+            'Example:\n'
+            'Hello world, this is my song\n'
+            'Singing in the rain\n'
+            'Dancing in the moonlight'
+        )
+        self.lyrics_text.setMaximumHeight(150)
+        lyrics_layout.addWidget(self.lyrics_text)
+
+        self.parse_btn = QPushButton('📝 Parse Lyrics')
+        self.parse_btn.setFixedHeight(32)
+        self.parse_btn.clicked.connect(self._parse_lyrics)
+        lyrics_layout.addWidget(self.parse_btn)
+
+        main_layout.addWidget(lyrics_group)
+
+        # ═══ TIMELINE: Line list with timestamps ═══
+        timeline_group = QGroupBox('⏱️ Timeline')
+        timeline_layout = QVBoxLayout(timeline_group)
+
+        # Info label
+        self.info_label = QLabel(
+            'Load audio and parse lyrics, then press SPACE to mark START times, '
+            'then SPACE again to mark END times for each line.'
+        )
+        self.info_label.setWordWrap(True)
+        self.info_label.setStyleSheet('color: #aaa; font-size: 12px; padding: 4px;')
+        timeline_layout.addWidget(self.info_label)
+
+        # Transport controls
+        transport_layout = QHBoxLayout()
+        self.play_btn = QPushButton('▶ Play')
+        self.play_btn.setFixedHeight(32)
+        self.play_btn.clicked.connect(self._toggle_play)
+        self.play_btn.setEnabled(False)
+        transport_layout.addWidget(self.play_btn)
+
+        self.stop_btn = QPushButton('⏹ Stop')
+        self.stop_btn.setFixedHeight(32)
+        self.stop_btn.clicked.connect(self._stop_audio)
+        self.stop_btn.setEnabled(False)
+        transport_layout.addWidget(self.stop_btn)
+
+        # Position slider
+        self.position_slider = QSlider(Qt.Orientation.Horizontal)
+        self.position_slider.setRange(0, 1000)
+        self.position_slider.sliderMoved.connect(self._seek_audio)
+        transport_layout.addWidget(self.position_slider, 1)
+
+        self.time_label = QLabel('0:00 / 0:00')
+        self.time_label.setFixedWidth(100)
+        self.time_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        transport_layout.addWidget(self.time_label)
+
+        timeline_layout.addLayout(transport_layout)
+
+        # Lines list
+        self.lines_list = QListWidget()
+        self.lines_list.setAlternatingRowColors(True)
+        self.lines_list.setStyleSheet('font-size: 13px;')
+        timeline_layout.addWidget(self.lines_list)
+
+        # Mark controls
+        mark_layout = QHBoxLayout()
+        self.mark_btn = QPushButton('⏱ Mark [SPACE]')
+        self.mark_btn.setFixedHeight(40)
+        self.mark_btn.setStyleSheet('font-size: 14px; font-weight: bold;')
+        self.mark_btn.clicked.connect(self._mark_timestamp)
+        self.mark_btn.setEnabled(False)
+        mark_layout.addWidget(self.mark_btn, 1)
+
+        self.reset_btn = QPushButton('🔄 Reset All')
+        self.reset_btn.setFixedHeight(40)
+        self.reset_btn.clicked.connect(self._reset_timestamps)
+        mark_layout.addWidget(self.reset_btn)
+
+        timeline_layout.addLayout(mark_layout)
+
+        main_layout.addWidget(timeline_group, 1)  # Stretch to fill space
+
+        # ═══ BOTTOM: Save button ═══
+        save_layout = QHBoxLayout()
+        save_layout.addStretch()
+
+        self.save_btn = QPushButton('💾 Save LRC')
+        self.save_btn.setFixedHeight(40)
+        self.save_btn.setStyleSheet('font-size: 14px; font-weight: bold;')
+        self.save_btn.clicked.connect(self._save_lrc)
+        self.save_btn.setEnabled(False)
+        save_layout.addWidget(self.save_btn)
+
+        main_layout.addLayout(save_layout)
+
+        # Keyboard shortcuts
+        self._setup_shortcuts()
+
+    def _setup_shortcuts(self):
+        """Setup keyboard shortcuts."""
+        from PyQt6.QtGui import QShortcut, QKeySequence
+
+        # Space bar for marking timestamps
+        space_shortcut = QShortcut(QKeySequence(Qt.Key.Key_Space), self)
+        space_shortcut.activated.connect(self._mark_timestamp)
+
+        # Backspace for undoing last timestamp
+        backspace_shortcut = QShortcut(QKeySequence(Qt.Key.Key_Backspace), self)
+        backspace_shortcut.activated.connect(self._undo_last_timestamp)
+
+    def _load_audio_file(self):
+        path, _ = QFileDialog.getOpenFileName(
+            self, 'Select Audio', '',
+            'Audio Files (*.mp3 *.wav *.ogg *.flac *.m4a *.aac);;All Files (*)'
+        )
+        if path:
+            self.audio_edit.setText(path)
+            self.audio_file = path
+            self.player.setSource(QUrl.fromLocalFile(path))
+            self.play_btn.setEnabled(True)
+            self.stop_btn.setEnabled(True)
+            self._update_info(f'✅ Loaded: {os.path.basename(path)}')
+
+    def _pick_output_file(self):
+        path, _ = QFileDialog.getSaveFileName(
+            self, 'Save LRC', 'song.lrc', 'LRC Files (*.lrc);;All Files (*)'
+        )
+        if path:
+            self.output_edit.setText(path)
+
+    def _parse_lyrics(self):
+        text = self.lyrics_text.toPlainText().strip()
+        if not text:
+            QMessageBox.warning(self, 'Error', 'Please enter some lyrics first.')
+            return
+
+        # Split into lines, filter empty
+        self.lyrics_lines = [line.strip() for line in text.split('\n') if line.strip()]
+        if not self.lyrics_lines:
+            QMessageBox.warning(self, 'Error', 'No valid lyrics lines found.')
+            return
+
+        # Update list widget
+        self.lines_list.clear()
+        for i, line in enumerate(self.lyrics_lines):
+            item = QListWidgetItem(f'Line {i+1}: {line}')
+            item.setData(Qt.ItemDataRole.UserRole, i)
+            self.lines_list.addItem(item)
+
+        self.timestamps = {}
+        self.current_line = 0
+        self.is_recording_start = True
+        self._update_list_display()
+        self.mark_btn.setEnabled(True)
+        self.save_btn.setEnabled(True)
+        self._update_info(f'✅ Parsed {len(self.lyrics_lines)} lines. Press PLAY, then SPACE to mark timestamps.')
+
+    def _toggle_play(self):
+        if self.player.playbackState() == QMediaPlayer.PlaybackState.PlayingState:
+            self.player.pause()
+            self.play_btn.setText('▶ Play')
+        else:
+            self.player.play()
+            self.play_btn.setText('⏸ Pause')
+
+    def _stop_audio(self):
+        self.player.stop()
+        self.play_btn.setText('▶ Play')
+
+    def _update_position_display(self):
+        if not self.audio_file:
+            return
+
+        duration = self.player.duration()  # milliseconds
+        position = self.player.position()
+
+        if duration > 0:
+            # Update slider
+            self.position_slider.blockSignals(True)
+            self.position_slider.setValue(int((position / duration) * 1000))
+            self.position_slider.blockSignals(False)
+
+            # Update time label
+            pos_str = self._format_time_ms(position)
+            dur_str = self._format_time_ms(duration)
+            self.time_label.setText(f'{pos_str} / {dur_str}')
+
+    def _format_time_ms(self, ms):
+        """Format milliseconds to M:SS.S format."""
+        total_seconds = ms / 1000.0
+        minutes = int(total_seconds // 60)
+        seconds = total_seconds - minutes * 60
+        return f'{minutes}:{seconds:05.2f}'
+
+    def _seek_audio(self, position):
+        if self.audio_file:
+            duration = self.player.duration()
+            if duration > 0:
+                self.player.setPosition(int((position / 1000.0) * duration))
+
+    def _mark_timestamp(self):
+        if not self.audio_file or not self.lyrics_lines:
+            QMessageBox.warning(self, 'Error', 'Load audio and parse lyrics first.')
+            return
+
+        if self.current_line >= len(self.lyrics_lines):
+            self._update_info('✅ All lines have been marked! You can save the LRC file now.')
+            return
+
+        current_time_ms = self.player.position()
+        current_time_sec = current_time_ms / 1000.0
+
+        if self.is_recording_start:
+            # Mark start time
+            if self.current_line not in self.timestamps:
+                self.timestamps[self.current_line] = {}
+            self.timestamps[self.current_line]['start'] = current_time_sec
+            self.is_recording_start = False
+            self._update_info(f'⏱️ Line {self.current_line + 1} START: {self._format_time_sec(current_time_sec)}')
+        else:
+            # Mark end time
+            self.timestamps[self.current_line]['end'] = current_time_sec
+
+            # Validate
+            if self.timestamps[self.current_line]['end'] <= self.timestamps[self.current_line]['start']:
+                QMessageBox.warning(self, 'Error', 'End time must be after start time. Try again.')
+                del self.timestamps[self.current_line]['end']
+                return
+
+            self.is_recording_start = True
+            self.current_line += 1
+            self._update_info(
+                f'⏱️ Line {self.current_line} END: {self._format_time_sec(current_time_sec)}\n'
+                f'Next: Line {self.current_line + 1} (if exists)'
+            )
+
+        self._update_list_display()
+
+        # Check if all lines are done
+        if self.current_line >= len(self.lyrics_lines):
+            self._update_info('✅ All lines marked! You can now save the LRC file.')
+            self.mark_btn.setEnabled(False)
+
+    def _format_time_sec(self, seconds):
+        """Format seconds to [mm:ss.xx] LRC format."""
+        minutes = int(seconds // 60)
+        secs = seconds - minutes * 60
+        return f'[{minutes:02d}:{secs:05.2f}]'
+
+    def _update_list_display(self):
+        """Update the lines list with timestamp information."""
+        for i in range(self.lines_list.count()):
+            item = self.lines_list.item(i)
+            line_idx = i
+            line_text = self.lyrics_lines[line_idx]
+
+            if line_idx in self.timestamps:
+                ts = self.timestamps[line_idx]
+                start_str = self._format_time_sec(ts.get('start', 0))
+                end_str = self._format_time_sec(ts.get('end', 0)) if 'end' in ts else '[??:??.??]'
+
+                if line_idx == self.current_line and not self.is_recording_start:
+                    # Waiting for end time - light yellow background, black text
+                    item.setText(f'▶ {line_idx+1}: {line_text}\n   START: {start_str} | END: {end_str} (waiting...)')
+                    item.setBackground(QColor(255, 255, 200))
+                    item.setForeground(QColor(0, 0, 0))
+                elif line_idx == self.current_line and self.is_recording_start:
+                    # Waiting for start time - light blue background, black text
+                    item.setText(f'▶ {line_idx+1}: {line_text}\n   START: [next] | END: [next]')
+                    item.setBackground(QColor(200, 230, 255))
+                    item.setForeground(QColor(0, 0, 0))
+                else:
+                    # Completed line - light green background, black text
+                    item.setText(f'✅ {line_idx+1}: {line_text}\n   {start_str} → {end_str}')
+                    item.setBackground(QColor(210, 240, 210))
+                    item.setForeground(QColor(0, 0, 0))
+            else:
+                if line_idx == self.current_line:
+                    # Current line waiting for start - light blue, black text
+                    item.setText(f'▶ {line_idx+1}: {line_text}\n   [waiting for START timestamp]')
+                    item.setBackground(QColor(200, 230, 255))
+                    item.setForeground(QColor(0, 0, 0))
+                else:
+                    # Future line - light gray background, black text
+                    item.setText(f'⏳ {line_idx+1}: {line_text}')
+                    item.setBackground(QColor(235, 235, 235))
+                    item.setForeground(QColor(0, 0, 0))
+
+        # Auto-scroll to current line
+        if self.current_line < self.lines_list.count():
+            self.lines_list.scrollToItem(self.lines_list.item(self.current_line), QListWidget.ScrollHint.EnsureVisible)
+
+    def _undo_last_timestamp(self):
+        """Undo the last timestamp (Backspace)."""
+        if not self.lyrics_lines:
+            return
+
+        if self.current_line == 0 and self.is_recording_start:
+            self._update_info('ℹ️ Nothing to undo.')
+            return
+
+        if not self.is_recording_start:
+            # Currently waiting for END time → remove START for current line
+            if self.current_line in self.timestamps:
+                del self.timestamps[self.current_line]
+                self.is_recording_start = True
+                self._update_info(f'↩️ Undid START for line {self.current_line + 1}')
+        else:
+            # Waiting for START time → go back to previous line
+            self.current_line -= 1
+            if self.current_line in self.timestamps:
+                # If previous line had both START and END, remove END
+                if 'end' in self.timestamps[self.current_line]:
+                    del self.timestamps[self.current_line]['end']
+                    self.is_recording_start = False
+                    self._update_info(f'↩️ Undid END for line {self.current_line + 1}')
+                else:
+                    # Remove START and go back one more
+                    del self.timestamps[self.current_line]
+                    self.current_line -= 1
+                    self.is_recording_start = True
+                    self._update_info(f'↩️ Undid line {self.current_line + 2}')
+            else:
+                self.is_recording_start = True
+                self._update_info(f'↩️ Back to line {self.current_line + 1}')
+
+        # Re-enable mark button if it was disabled
+        self.mark_btn.setEnabled(True)
+        self._update_list_display()
+
+    def _reset_timestamps(self):
+        reply = QMessageBox.question(
+            self, 'Reset', 'Reset all timestamps?',
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+        )
+        if reply == QMessageBox.StandardButton.Yes:
+            self.timestamps = {}
+            self.current_line = 0
+            self.is_recording_start = True
+            self._update_list_display()
+            self.mark_btn.setEnabled(True)
+            self._update_info('🔄 All timestamps reset.')
+
+    def _save_lrc(self):
+        output_path = self.output_edit.text().strip()
+        if not output_path:
+            QMessageBox.warning(self, 'Error', 'Specify an output file path.')
+            return
+
+        # Validate all lines have timestamps
+        if len(self.timestamps) < len(self.lyrics_lines):
+            reply = QMessageBox.question(
+                self, 'Incomplete',
+                f'Only {len(self.timestamps)}/{len(self.lyrics_lines)} lines have timestamps.\n'
+                'Save anyway?',
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+            )
+            if reply == QMessageBox.StandardButton.No:
+                return
+
+        # Generate LRC content
+        lrc_lines = []
+        for i in range(len(self.lyrics_lines)):
+            if i in self.timestamps:
+                ts = self.timestamps[i]
+                start_tag = self._format_time_sec(ts['start'])
+                lrc_lines.append(f'{start_tag}{self.lyrics_lines[i]}')
+            else:
+                # Lines without timestamps
+                lrc_lines.append(self.lyrics_lines[i])
+
+        # Write to file
+        try:
+            with open(output_path, 'w', encoding='utf-8') as f:
+                f.write('\n'.join(lrc_lines))
+            QMessageBox.information(self, 'Success', f'LRC file saved:\n{output_path}')
+            self._update_info(f'✅ Saved: {output_path}')
+        except Exception as e:
+            QMessageBox.critical(self, 'Error', f'Failed to save:\n{e}')
+
+    def _update_info(self, msg):
+        self.info_label.setText(msg)
+
+    def closeEvent(self, event):
+        """Clean up resources when window is closed."""
+        self.position_timer.stop()
+        self.player.stop()
+        super().closeEvent(event)
 
 
 def main():
