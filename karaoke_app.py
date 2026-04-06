@@ -203,7 +203,7 @@ def split_words_with_timing(lines, audio_duration, fontsize, font_regular, font_
 
 def render_frame(t, width, height, enriched_lines, fontsize, font,
                  text_rect, highlight_color, unhighlighted_color,
-                 bg_prepared=None, text_bg_color=(0, 0, 0, 140), bold=False):
+                 bg_prepared=None, text_bg_color=(0, 0, 0, 140), bold=False, countdown=True):
     if bg_prepared is not None:
         img = bg_prepared.copy()
     else:
@@ -285,7 +285,41 @@ def render_frame(t, width, height, enriched_lines, fontsize, font,
 
                 x += ww + 10
 
+    # Draw countdown timer if pause to next line is > 5 seconds
+    if countdown:
+        _draw_countdown(draw, t, enriched_lines, font, rx, ry, rw, rh, unhighlighted_color)
+
     return np.array(img)
+
+
+def _draw_countdown(draw, t, lines, font, rx, ry, rw, rh, text_color):
+    """Draw countdown timer when pause to next line is > 5 seconds."""
+    if isinstance(text_color, str):
+        text_color = tuple(int(text_color.lstrip('#')[i:i+2], 16) for i in (0, 2, 4))
+    
+    for i in range(len(lines) - 1):
+        line = lines[i]
+        next_line = lines[i + 1]
+        
+        line_end = line.get('end')
+        if line_end is None:
+            line_end = line['time']
+        
+        next_start = next_line['time']
+        gap = next_start - line_end
+        
+        if gap > 5.0 and t >= line_end and t < next_start:
+            remaining = next_start - t
+            count = int(remaining)
+            if count >= 1:
+                countdown_text = f"[...{count}...]"
+                bbox = font.getbbox(countdown_text)
+                text_w = bbox[2] - bbox[0]
+                text_h = bbox[3] - bbox[1]
+                x = rx + (rw - text_w) // 2
+                y = ry + rh - text_h - 20
+                draw.text((x, y), countdown_text, fill=text_color, font=font)
+                break
 
 
 def prepare_background(bg_pil, width, height):
@@ -374,6 +408,7 @@ class RenderWorker(QThread):
                     c['fontsize'], font, text_rect,
                     h_color, u_color, bg_prepared,
                     text_bg_color=text_bg, bold=c.get('bold', False),
+                    countdown=c.get('countdown', True),
                 )
 
             self.sig_log.emit(f"📹 Creating video ({duration:.0f}s at {FPS}fps)...")
@@ -452,6 +487,7 @@ class TextPreview(QFrame):
         self.text_bg_color = (0, 0, 0, 140)
         self.preview_pixmap = None
         self._img_data_ref = None
+        self.countdown = True
 
     def _render_preview(self):
         """Render preview frame using PIL, same as video rendering."""
@@ -476,6 +512,7 @@ class TextPreview(QFrame):
             bg_prepared=bg_prepared,
             text_bg_color=self.text_bg_color,
             bold=self.bold,
+            countdown=self.countdown,
         )
 
         # Scale down to widget size
@@ -507,7 +544,7 @@ class TextPreview(QFrame):
 
     def update_preview(self, text_rect, enriched_lines, h_color, u_color,
                        sample_t=0, bg_pil=None, fontsize=50,
-                       bold=False, font=None, text_bg_color=None):
+                       bold=False, font=None, text_bg_color=None, countdown=True):
         self.text_rect = text_rect
         self.enriched_lines = enriched_lines
         self.highlight_color = h_color
@@ -517,6 +554,7 @@ class TextPreview(QFrame):
         self.fontsize = fontsize
         self.font_obj = font
         self.bold = bold
+        self.countdown = countdown
         if text_bg_color is not None:
             self.text_bg_color = text_bg_color
         self._render_preview()
@@ -671,6 +709,11 @@ class MainWindow(QMainWindow):
         self.bold_check.setChecked(False)
         self.bold_check.stateChanged.connect(self._update_preview_from_controls)
         app_layout.addWidget(self.bold_check, 0, 2)
+
+        self.countdown_check = QCheckBox('Countdown (>5s pause)')
+        self.countdown_check.setChecked(True)
+        self.countdown_check.stateChanged.connect(self._update_preview_from_controls)
+        app_layout.addWidget(self.countdown_check, 0, 3)
 
         app_layout.addWidget(QLabel('Highlight:'), 1, 0)
         self.h_color_btn = QPushButton()
@@ -860,6 +903,7 @@ class MainWindow(QMainWindow):
             bold=bold,
             font=font,
             text_bg_color=text_bg_rgba,
+            countdown=self.countdown_check.isChecked(),
         )
 
     def _on_preview_time_changed(self, val):
@@ -937,6 +981,7 @@ class MainWindow(QMainWindow):
             'highlight_color': self._h_color.name(),
             'unhighlighted_color': self._u_color.name(),
             'bold': self.bold_check.isChecked(),
+            'countdown': self.countdown_check.isChecked(),
             'text_bg_color': (
                 self._text_bg_color.red(),
                 self._text_bg_color.green(),

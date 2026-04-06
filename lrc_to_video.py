@@ -184,7 +184,42 @@ def render_frame(t, width, height, word_timeline, lines, fontsize, font,
 
                 x += ww + 10
 
+    # Draw countdown timer if pause to next line is > 5 seconds
+    _draw_countdown(draw, t, lines, font, rx, ry, rw, rh)
+
     return np.array(img)
+
+
+def _draw_countdown(draw, t, lines, font, rx, ry, rw, rh):
+    """Draw countdown timer when pause to next line is > 5 seconds."""
+    # Find the current line group being shown
+    for i in range(len(lines) - 1):
+        line = lines[i]
+        next_line = lines[i + 1]
+        
+        # Get end time of current line
+        line_end = line.get('end')
+        if line_end is None:
+            line_end = line['time']  # fallback if no end time
+        
+        next_start = next_line['time']
+        gap = next_start - line_end
+        
+        # If gap > 5 seconds and we're in the pause period
+        if gap > 5.0 and t >= line_end and t < next_start:
+            remaining = next_start - t
+            count = int(remaining)
+            if count >= 1:
+                countdown_text = f"[...{count}...]"
+                # Position: center of text area
+                bbox = font.getbbox(countdown_text)
+                text_w = bbox[2] - bbox[0]
+                text_h = bbox[3] - bbox[1]
+                x = rx + (rw - text_w) // 2
+                y = ry + rh - text_h - 20  # Near bottom of text rect
+                
+                draw.text((x, y), countdown_text, fill='#888888', font=font)
+                break
 
 
 def create_karaoke_video(lrc_file, audio_file, output_video,
