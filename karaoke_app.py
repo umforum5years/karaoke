@@ -11,7 +11,7 @@ from PyQt6.QtWidgets import (
     QGridLayout, QGroupBox, QLabel, QLineEdit, QPushButton,
     QSpinBox, QSlider, QColorDialog, QFileDialog, QProgressBar,
     QTextEdit, QMessageBox, QFrame, QCheckBox, QListWidget, QListWidgetItem,
-    QSplitter,
+    QSplitter, QButtonGroup,
 )
 from PyQt6.QtCore import Qt, QThread, pyqtSignal, QTimer, QUrl
 from PyQt6.QtGui import QColor, QPalette, QFont, QPainter, QPen, QBrush, QPixmap, QImage
@@ -203,7 +203,8 @@ def split_words_with_timing(lines, audio_duration, fontsize, font_regular, font_
 
 def render_frame(t, width, height, enriched_lines, fontsize, font,
                  text_rect, highlight_color, unhighlighted_color,
-                 bg_prepared=None, text_bg_color=(0, 0, 0, 140), bold=False, countdown=True):
+                 bg_prepared=None, text_bg_color=(0, 0, 0, 140), bold=False, countdown=True,
+                 align='center'):
     if bg_prepared is not None:
         img = bg_prepared.copy()
     else:
@@ -236,7 +237,16 @@ def render_frame(t, width, height, enriched_lines, fontsize, font,
             if not words:
                 continue
 
-            x = rx + (rw - total_width) // 2
+            # Calculate X position based on alignment
+            if align == 'left':
+                x = rx
+            elif align == 'right':
+                x = rx + rw - total_width
+            elif align == 'justify' and len(words) > 1:
+                x = rx
+                justify_gap = (rw - total_width + 10 * (len(words) - 1)) / (len(words) - 1)
+            else:  # center
+                x = rx + (rw - total_width) // 2
 
             draw.rounded_rectangle(
                 [x - 10, y - 4, x + total_width + 10, y + fontsize + 4],
@@ -283,7 +293,11 @@ def render_frame(t, width, height, enriched_lines, fontsize, font,
                         highlight_img = highlight_img.crop((0, 0, fill_w, highlight_img.height))
                         img.paste(highlight_img, (x, y), highlight_img)
 
-                x += ww + 10
+                # Move to next word position
+                if align == 'justify' and len(words) > 1 and word_idx < len(words) - 1:
+                    x += ww + justify_gap
+                else:
+                    x += ww + 10
 
     # Draw countdown timer if pause to next line is > 5 seconds
     if countdown:
@@ -409,6 +423,7 @@ class RenderWorker(QThread):
                     h_color, u_color, bg_prepared,
                     text_bg_color=text_bg, bold=c.get('bold', False),
                     countdown=c.get('countdown', True),
+                    align=c.get('align', 'center'),
                 )
 
             self.sig_log.emit(f"📹 Creating video ({duration:.0f}s at {FPS}fps)...")
@@ -513,6 +528,7 @@ class TextPreview(QFrame):
             text_bg_color=self.text_bg_color,
             bold=self.bold,
             countdown=self.countdown,
+            align=getattr(self, 'align', 'center'),
         )
 
         # Scale down to widget size
@@ -544,7 +560,7 @@ class TextPreview(QFrame):
 
     def update_preview(self, text_rect, enriched_lines, h_color, u_color,
                        sample_t=0, bg_pil=None, fontsize=50,
-                       bold=False, font=None, text_bg_color=None, countdown=True):
+                       bold=False, font=None, text_bg_color=None, countdown=True, align='center'):
         self.text_rect = text_rect
         self.enriched_lines = enriched_lines
         self.highlight_color = h_color
@@ -555,6 +571,7 @@ class TextPreview(QFrame):
         self.font_obj = font
         self.bold = bold
         self.countdown = countdown
+        self.align = align
         if text_bg_color is not None:
             self.text_bg_color = text_bg_color
         self._render_preview()
@@ -573,6 +590,7 @@ class MainWindow(QMainWindow):
         self.audio_file = ''
         self.bg_image = ''
         self.parsed_lines = []
+        self.align = 'center'  # Default text alignment
 
         self._build_ui()
 
@@ -677,6 +695,21 @@ class MainWindow(QMainWindow):
         self.th_spin.valueChanged.connect(self._update_preview_from_controls)
         area_layout.addWidget(self.th_spin, 3, 1)
 
+        # Alignment radio buttons
+        self.align_btn_group = QButtonGroup()
+        self.align_btn_group.setExclusive(True)
+        align_layout = QHBoxLayout()
+        align_layout.addWidget(QLabel('Align:'))
+        for i, (label, val) in enumerate([('Left', 'left'), ('Center', 'center'), ('Right', 'right'), ('Justify', 'justify')]):
+            btn = QPushButton(label)
+            btn.setCheckable(True)
+            btn.clicked.connect(lambda checked, v=val: self._set_align(v))
+            align_layout.addWidget(btn)
+            self.align_btn_group.addButton(btn, i)
+            if val == 'center':
+                btn.setChecked(True)
+        area_layout.addLayout(align_layout, 4, 0, 1, 2)
+
         preset_layout = QHBoxLayout()
         preset_layout.setSpacing(4)
         for label, vals in [
@@ -688,7 +721,7 @@ class MainWindow(QMainWindow):
             btn = QPushButton(label)
             btn.clicked.connect(lambda _, v=vals: self._apply_preset(v))
             preset_layout.addWidget(btn)
-        area_layout.addLayout(preset_layout, 4, 0, 1, 2)
+        area_layout.addLayout(preset_layout, 5, 0, 1, 2)
 
         left_layout.addWidget(area_group)
 
@@ -848,6 +881,15 @@ class MainWindow(QMainWindow):
         self.th_spin.setValue(vals[3])
         self._update_preview_from_controls()
 
+    def _set_align(self, align):
+        """Set text alignment and update preview."""
+        self.align = align
+        self._update_preview_from_controls()
+
+    def get_align(self):
+        """Get current text alignment."""
+        return self.align
+
     def _update_preview_from_controls(self):
         rect = (self.tx_spin.value(), self.ty_spin.value(),
                 self.tw_spin.value(), self.th_spin.value())
@@ -904,6 +946,7 @@ class MainWindow(QMainWindow):
             font=font,
             text_bg_color=text_bg_rgba,
             countdown=self.countdown_check.isChecked(),
+            align=self.align,
         )
 
     def _on_preview_time_changed(self, val):
@@ -982,6 +1025,7 @@ class MainWindow(QMainWindow):
             'unhighlighted_color': self._u_color.name(),
             'bold': self.bold_check.isChecked(),
             'countdown': self.countdown_check.isChecked(),
+            'align': self.align,
             'text_bg_color': (
                 self._text_bg_color.red(),
                 self._text_bg_color.green(),

@@ -77,11 +77,12 @@ def load_background_image(image_path, video_size):
 
 
 def render_frame(t, width, height, word_timeline, lines, fontsize, font,
-                 text_rect=None, bg_image=None):
+                 text_rect=None, bg_image=None, align='center'):
     """Render a single frame with karaoke text at time t.
 
     text_rect — (x, y, w, h) area where text is drawn.
     bg_image  — PIL Image used as background (reused each frame).
+    align     — 'left', 'center', 'right', 'justify'
     """
     if bg_image is not None:
         img = bg_image.copy()
@@ -130,7 +131,17 @@ def render_frame(t, width, height, word_timeline, lines, fontsize, font,
                 word_widths.append(w)
 
             total_width = sum(word_widths) + 10 * (len(words) - 1)
-            x = rx + (rw - total_width) // 2
+            
+            # Calculate X position based on alignment
+            if align == 'left':
+                x = rx
+            elif align == 'right':
+                x = rx + rw - total_width
+            elif align == 'justify' and len(words) > 1:
+                x = rx
+                justify_gap = (rw - total_width + 10 * (len(words) - 1)) / (len(words) - 1)
+            else:  # center
+                x = rx + (rw - total_width) // 2
 
             # Draw semi-transparent dark rectangle behind text line for readability
             draw.rounded_rectangle(
@@ -182,7 +193,11 @@ def render_frame(t, width, height, word_timeline, lines, fontsize, font,
                         highlight_img = highlight_img.crop((0, 0, fill_w, highlight_img.height))
                         img.paste(highlight_img, (x, y), highlight_img)
 
-                x += ww + 10
+                # Move to next word position
+                if align == 'justify' and len(words) > 1 and word_idx < len(words) - 1:
+                    x += ww + justify_gap
+                else:
+                    x += ww + 10
 
     # Draw countdown timer if pause to next line is > 5 seconds
     _draw_countdown(draw, t, lines, font, rx, ry, rw, rh)
@@ -223,7 +238,7 @@ def _draw_countdown(draw, t, lines, font, rx, ry, rw, rh):
 
 
 def create_karaoke_video(lrc_file, audio_file, output_video,
-                         fontsize=50, bg_image_path=None, text_rect=None):
+                         fontsize=50, bg_image_path=None, text_rect=None, align='center'):
     print("📝 Parsing LRC...")
     metadata, lines = parse_lrc(lrc_file)
     print(f"📊 {len(lines)} lines")
@@ -256,7 +271,7 @@ def create_karaoke_video(lrc_file, audio_file, output_video,
 
     def make_frame(t):
         return render_frame(t, width, height, word_timeline, lines, fontsize, font,
-                            text_rect=text_rect, bg_image=bg_pil)
+                            text_rect=text_rect, bg_image=bg_pil, align=align)
 
     print(f"📹 Creating video ({duration:.0f}s at 30fps)...")
     video = VideoClip(make_frame, duration=duration)
@@ -296,6 +311,9 @@ if __name__ == '__main__':
     # Set to None to use the full frame with auto margins
     TEXT_RECT = (200, 100, 800, 500)  # bottom band example
 
+    # Text alignment: 'left', 'center', 'right', 'justify'
+    ALIGN = 'center'
+
     create_karaoke_video(
         LRC_FILE,
         AUDIO_FILE,
@@ -303,4 +321,5 @@ if __name__ == '__main__':
         fontsize=FONT_SIZE,
         bg_image_path=BG_IMAGE,
         text_rect=TEXT_RECT,
+        align=ALIGN,
     )
