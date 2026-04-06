@@ -106,11 +106,24 @@ def parse_lrc(lrc_file):
             metadata[key] = match.group(1).strip()
 
     lines = []
-    for match in re.finditer(r'\[(\d+):(\d+\.\d+)\](.*)', content):
-        time_sec = int(match.group(1)) * 60 + float(match.group(2))
-        text = match.group(3).strip()
+    # Support both single [time]text and dual [start][end]text formats
+    for match in re.finditer(r'\[(\d+):(\d+\.\d+)\](?:\[(\d+):(\d+\.\d+)\])?(.*)', content):
+        start_min, start_sec = int(match.group(1)), float(match.group(2))
+        start_time_sec = start_min * 60 + start_sec
+        
+        end_min, end_sec = match.group(3), match.group(4)
+        if end_min is not None and end_sec is not None:
+            end_time_sec = int(end_min) * 60 + float(end_sec)
+        else:
+            end_time_sec = None
+        
+        text = match.group(5).strip()
         if text:
-            lines.append({'time': time_sec, 'text': text})
+            lines.append({
+                'time': start_time_sec,
+                'end': end_time_sec,
+                'text': text
+            })
 
     lines.sort(key=lambda x: x['time'])
     return metadata, lines
@@ -122,8 +135,12 @@ def split_words_with_timing(lines, audio_duration, fontsize, font_regular, font_
     enriched_lines = []
 
     for i, line in enumerate(lines):
-        next_time = lines[i + 1]['time'] if i + 1 < len(lines) else audio_duration
-        line_duration = max(next_time - line['time'], 1.0)
+        # Use explicit end time if available, otherwise fallback to next line start
+        if line.get('end') is not None:
+            line_duration = max(line['end'] - line['time'], 0.1)
+        else:
+            next_time = lines[i + 1]['time'] if i + 1 < len(lines) else audio_duration
+            line_duration = max(next_time - line['time'], 1.0)
         words = line['text'].split()
         if not words:
             enriched_lines.append({
@@ -168,6 +185,7 @@ def split_words_with_timing(lines, audio_duration, fontsize, font_regular, font_
             })
         enriched_lines.append({
             'time': line['time'],
+            'end': line.get('end'),
             'text': line['text'],
             'word_starts': word_starts,
             'word_durations': word_durations,
@@ -228,6 +246,9 @@ def render_frame(t, width, height, enriched_lines, fontsize, font,
             for word_idx, word in enumerate(words):
                 ww = word_widths[word_idx]
 
+                # Check if we're past the line's end time — keep highlighted
+                line_end = line.get('end')
+
                 # Calculate fill ratio (0.0 to 1.0)
                 fill_ratio = 0.0
                 if word_idx < len(word_starts):
@@ -236,6 +257,10 @@ def render_frame(t, width, height, enriched_lines, fontsize, font,
                         fill_ratio = min(max(elapsed / word_durations[word_idx], 0.0), 1.0)
                     elif elapsed > 0:
                         fill_ratio = 1.0
+
+                # After line end, keep words highlighted
+                if line_end is not None and t >= line_end:
+                    fill_ratio = 1.0
 
                 if fill_ratio <= 0:
                     # Fully unhighlighted
@@ -1073,6 +1098,12 @@ class LRCCreatorWindow(QMainWindow):
         self.mark_btn.setEnabled(False)
         mark_layout.addWidget(self.mark_btn, 1)
 
+        self.undo_btn = QPushButton('↩ Undo [Backspace]')
+        self.undo_btn.setFixedHeight(40)
+        self.undo_btn.clicked.connect(self._undo_last_timestamp)
+        self.undo_btn.setEnabled(False)
+        mark_layout.addWidget(self.undo_btn)
+
         self.reset_btn = QPushButton('🔄 Reset All')
         self.reset_btn.setFixedHeight(40)
         self.reset_btn.clicked.connect(self._reset_timestamps)
@@ -1154,6 +1185,7 @@ class LRCCreatorWindow(QMainWindow):
         self.is_recording_start = True
         self._update_list_display()
         self.mark_btn.setEnabled(True)
+        self.undo_btn.setEnabled(True)
         self.save_btn.setEnabled(True)
         self._update_info(f'✅ Parsed {len(self.lyrics_lines)} lines. Press PLAY, then SPACE to mark timestamps.')
 
@@ -1242,6 +1274,7 @@ class LRCCreatorWindow(QMainWindow):
         if self.current_line >= len(self.lyrics_lines):
             self._update_info('✅ All lines marked! You can now save the LRC file.')
             self.mark_btn.setEnabled(False)
+            self.undo_btn.setEnabled(True)  # Still allow undo even when all done
 
     def _format_time_sec(self, seconds):
         """Format seconds to [mm:ss.xx] LRC format."""
@@ -1299,6 +1332,7 @@ class LRCCreatorWindow(QMainWindow):
 
         if self.current_line == 0 and self.is_recording_start:
             self._update_info('ℹ️ Nothing to undo.')
+            self.undo_btn.setEnabled(False)
             return
 
         if not self.is_recording_start:
@@ -1321,6 +1355,8 @@ class LRCCreatorWindow(QMainWindow):
                     del self.timestamps[self.current_line]
                     self.current_line -= 1
                     self.is_recording_start = True
+                    if self.current_line < 0:
+                        self.current_line = 0
                     self._update_info(f'↩️ Undid line {self.current_line + 2}')
             else:
                 self.is_recording_start = True
@@ -1328,6 +1364,7 @@ class LRCCreatorWindow(QMainWindow):
 
         # Re-enable mark button if it was disabled
         self.mark_btn.setEnabled(True)
+        self.undo_btn.setEnabled(True)
         self._update_list_display()
 
     def _reset_timestamps(self):
@@ -1366,7 +1403,8 @@ class LRCCreatorWindow(QMainWindow):
             if i in self.timestamps:
                 ts = self.timestamps[i]
                 start_tag = self._format_time_sec(ts['start'])
-                lrc_lines.append(f'{start_tag}{self.lyrics_lines[i]}')
+                end_tag = self._format_time_sec(ts['end']) if 'end' in ts else ''
+                lrc_lines.append(f'{start_tag}{end_tag}{self.lyrics_lines[i]}')
             else:
                 # Lines without timestamps
                 lrc_lines.append(self.lyrics_lines[i])

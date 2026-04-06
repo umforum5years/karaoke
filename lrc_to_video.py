@@ -19,11 +19,24 @@ def parse_lrc(lrc_file):
             metadata[key] = match.group(1).strip()
 
     lines = []
-    for match in re.finditer(r'\[(\d+):(\d+\.\d+)\](.*)', content):
-        time_sec = int(match.group(1)) * 60 + float(match.group(2))
-        text = match.group(3).strip()
+    # Support both single [time]text and dual [start][end]text formats
+    for match in re.finditer(r'\[(\d+):(\d+\.\d+)\](?:\[(\d+):(\d+\.\d+)\])?(.*)', content):
+        start_min, start_sec = int(match.group(1)), float(match.group(2))
+        start_time_sec = start_min * 60 + start_sec
+        
+        end_min, end_sec = match.group(3), match.group(4)
+        if end_min is not None and end_sec is not None:
+            end_time_sec = int(end_min) * 60 + float(end_sec)
+        else:
+            end_time_sec = None
+        
+        text = match.group(5).strip()
         if text:
-            lines.append({'time': time_sec, 'text': text})
+            lines.append({
+                'time': start_time_sec,
+                'end': end_time_sec,
+                'text': text
+            })
 
     lines.sort(key=lambda x: x['time'])
     return metadata, lines
@@ -32,8 +45,13 @@ def parse_lrc(lrc_file):
 def split_words_with_timing(lines, audio_duration):
     word_timeline = []
     for i, line in enumerate(lines):
-        next_time = lines[i + 1]['time'] if i + 1 < len(lines) else audio_duration
-        line_duration = max(next_time - line['time'], 1.0)
+        # Use explicit end time if available, otherwise fallback to next line start
+        if line.get('end') is not None:
+            line_duration = max(line['end'] - line['time'], 0.1)
+        else:
+            next_time = lines[i + 1]['time'] if i + 1 < len(lines) else audio_duration
+            line_duration = max(next_time - line['time'], 1.0)
+        
         words = line['text'].split()
         if not words:
             continue
@@ -46,6 +64,7 @@ def split_words_with_timing(lines, audio_duration):
                 'start': w_start,
                 'end': w_end,
                 'line_time': line['time'],
+                'line_end': line.get('end'),
             })
     return word_timeline
 
@@ -127,10 +146,12 @@ def render_frame(t, width, height, word_timeline, lines, fontsize, font,
                 # Find this word's timing info
                 word_start = None
                 word_dur = None
+                line_end = None
                 for wt in word_timeline:
                     if wt['text'] == word and abs(wt['line_time'] - line['time']) < 0.01:
                         word_start = wt['start']
                         word_dur = wt['end'] - wt['start']
+                        line_end = wt.get('line_end')
                         break
 
                 # Calculate fill ratio
@@ -141,6 +162,10 @@ def render_frame(t, width, height, word_timeline, lines, fontsize, font,
                         fill_ratio = min(max(elapsed / word_dur, 0.0), 1.0)
                     elif elapsed > 0:
                         fill_ratio = 1.0
+
+                # After line end, keep words highlighted
+                if line_end is not None and t >= line_end:
+                    fill_ratio = 1.0
 
                 if fill_ratio <= 0:
                     draw.text((x, y), word, fill='#AAAAAA', font=font)
