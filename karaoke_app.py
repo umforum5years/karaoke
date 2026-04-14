@@ -219,7 +219,12 @@ def render_frame(t, width, height, enriched_lines, fontsize, font,
     for group_start in range(0, len(enriched_lines), lines_per_screen):
         group = enriched_lines[group_start:group_start + lines_per_screen]
         first_time = group[0]['time'] if group else 0
-        next_first = enriched_lines[group_start + lines_per_screen]['time'] if group_start + lines_per_screen < len(enriched_lines) else first_time + 10
+
+        if group_start + lines_per_screen < len(enriched_lines):
+            next_first = enriched_lines[group_start + lines_per_screen]['time']
+        else:
+            # Last group: keep text on screen until end of video (no cutoff)
+            next_first = float('inf')
 
         if t < first_time or t >= next_first:
             continue
@@ -687,14 +692,14 @@ class MainWindow(QMainWindow):
         self.tw_spin = QSpinBox()
         self.tw_spin.setRange(50, VIDEO_W)
         self.tw_spin.setValue(1080)
-        self.tw_spin.valueChanged.connect(self._update_preview_from_controls)
+        self.tw_spin.setEnabled(False)  # Fixed, not user-editable
         area_layout.addWidget(self.tw_spin, 2, 1)
 
         area_layout.addWidget(QLabel('H:'), 3, 0)
         self.th_spin = QSpinBox()
         self.th_spin.setRange(30, VIDEO_H)
         self.th_spin.setValue(280)
-        self.th_spin.valueChanged.connect(self._update_preview_from_controls)
+        self.th_spin.setEnabled(False)  # Fixed, not user-editable
         area_layout.addWidget(self.th_spin, 3, 1)
 
         # Alignment radio buttons
