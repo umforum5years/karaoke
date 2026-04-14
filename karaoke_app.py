@@ -628,6 +628,7 @@ class MainWindow(QMainWindow):
         self.audio_edit = QLineEdit()
         self.audio_edit.setPlaceholderText('.mp3 / .wav / .ogg…')
         self.audio_edit.textChanged.connect(self._on_audio_path_changed)
+        self.audio_edit.editingFinished.connect(self._update_output_from_audio)
         file_layout.addWidget(self.audio_edit, 1, 1)
         self.audio_btn = QPushButton('…')
         self.audio_btn.setFixedWidth(32)
@@ -645,7 +646,8 @@ class MainWindow(QMainWindow):
         file_layout.addWidget(self.bg_btn, 2, 2)
 
         file_layout.addWidget(QLabel('Output:'), 3, 0)
-        self.out_edit = QLineEdit('karaoke.mp4')
+        self.out_edit = QLineEdit()
+        self.out_edit.setPlaceholderText('auto-named after audio file')
         file_layout.addWidget(self.out_edit, 3, 1)
         self.out_btn = QPushButton('…')
         self.out_btn.setFixedWidth(32)
@@ -834,6 +836,15 @@ class MainWindow(QMainWindow):
             self.audio_file = path
             self._update_preview_from_controls()
 
+    def _update_output_from_audio(self):
+        """Update output filename based on audio file after manual edit."""
+        path = self.audio_edit.text().strip()
+        if path and os.path.exists(path):
+            self.audio_file = path
+            audio_name = os.path.splitext(os.path.basename(path))[0]
+            output_filename = f"{audio_name}.mp4"
+            self.out_edit.setText(output_filename)
+
     def _on_lrc_path_changed(self):
         path = self.lrc_edit.text().strip()
         if path and os.path.exists(path):
@@ -854,9 +865,17 @@ class MainWindow(QMainWindow):
                 self._try_parse_lrc()
             elif kind == 'audio':
                 self.audio_file = path
+                # Auto-set output filename based on audio filename
+                audio_name = os.path.splitext(os.path.basename(path))[0]
+                output_filename = f"{audio_name}.mp4"
+                self.out_edit.setText(output_filename)
 
     def _pick_output(self):
-        path, _ = QFileDialog.getSaveFileName(self, 'Save Video', 'karaoke.mp4', 'MP4 Video (*.mp4)')
+        # Suggest filename based on audio file name
+        suggested_name = 'karaoke.mp4'
+        if self.audio_file:
+            suggested_name = f"{os.path.splitext(os.path.basename(self.audio_file))[0]}.mp4"
+        path, _ = QFileDialog.getSaveFileName(self, 'Save Video', suggested_name, 'MP4 Video (*.mp4)')
         if path:
             self.out_edit.setText(path)
 
