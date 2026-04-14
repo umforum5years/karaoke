@@ -1121,7 +1121,8 @@ class LRCCreatorWindow(QMainWindow):
         file_layout.addWidget(self.audio_btn, 0, 2)
 
         file_layout.addWidget(QLabel('Output:'), 1, 0)
-        self.output_edit = QLineEdit('song.lrc')
+        self.output_edit = QLineEdit()
+        self.output_edit.setPlaceholderText('auto-named after audio file')
         file_layout.addWidget(self.output_edit, 1, 1)
         self.output_btn = QPushButton('Browse')
         self.output_btn.clicked.connect(self._pick_output_file)
@@ -1260,11 +1261,19 @@ class LRCCreatorWindow(QMainWindow):
             self.player.setSource(QUrl.fromLocalFile(path))
             self.play_btn.setEnabled(True)
             self.stop_btn.setEnabled(True)
+            # Auto-set output filename based on audio filename
+            audio_name = os.path.splitext(os.path.basename(path))[0]
+            output_filename = f"{audio_name}.lrc"
+            self.output_edit.setText(output_filename)
             self._update_info(f'✅ Loaded: {os.path.basename(path)}')
 
     def _pick_output_file(self):
+        # Suggest filename based on audio file name
+        suggested_name = 'song.lrc'
+        if self.audio_file:
+            suggested_name = f"{os.path.splitext(os.path.basename(self.audio_file))[0]}.lrc"
         path, _ = QFileDialog.getSaveFileName(
-            self, 'Save LRC', 'song.lrc', 'LRC Files (*.lrc);;All Files (*)'
+            self, 'Save LRC', suggested_name, 'LRC Files (*.lrc);;All Files (*)'
         )
         if path:
             self.output_edit.setText(path)
